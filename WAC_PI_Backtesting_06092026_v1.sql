@@ -18,7 +18,7 @@
 /* ---------------------------------------------------------------------
    STEP 0: Backtest runs
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_RUNS_v6 AS
+CREATE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_RUNS_v6 AS
 SELECT
     'BT_2024_01' AS run_id,
     TO_DATE('2024-01-01') AS jump_off_month,
@@ -81,7 +81,7 @@ select * from PRD_MT_BIG_BETS_DB.POC.WAC_PI_FORECAST_BASELINE_PRICE_V2_FINAL_MOD
    - Deduplicate to one row per ndc + material
    - Keep the most frequent category if multiple exist
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_UNIVERSE_v6 AS
+CREATE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_UNIVERSE_v6 AS
 WITH base AS (
     SELECT
         COPA_NDC_NUM       AS ndc_nmbr,
@@ -139,7 +139,7 @@ WHERE rn = 1
    - TRY_TO_NUMBER used only for VSTX join
    - Add ITM_CTVTY_CDE and CURR_FLG from material master
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BF_ATTRS_v6 AS
+CREATE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BF_ATTRS_v6 AS
 WITH
 mtrl AS (
     SELECT
@@ -257,7 +257,7 @@ LEFT JOIN ahfs a
    STEP 2b: Append EP Patent Expiry
    - One row per ndc + material
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BF_ATTRS_UPD_v6 AS
+CREATE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BF_ATTRS_UPD_v6 AS
 WITH
 EP as (
     select 
@@ -284,7 +284,7 @@ ON
    STEP 2c: Deduplicate attributes
    - One row per ndc + material
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_ATTRS_DEDUP_v6 AS
+CREATE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_ATTRS_DEDUP_v6 AS
 WITH ranked AS (
     SELECT
         a.*,
@@ -331,7 +331,7 @@ select count(distinct mtrl_num) from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_ACTUAL_WAC
    - There are some materials associated with multiple cust_prod_category; But they have the same WAC in all records
    ===================================================================== */
 
-CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_ACTUAL_WAC_MONTHLY_v6 AS
+CREATE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_ACTUAL_WAC_MONTHLY_v6 AS
 WITH base AS (
     SELECT
         COPA.COPA_NDC_NUM         AS ndc_nmbr,
@@ -384,7 +384,7 @@ STEP 3B: MATERIAL LIFECYCLE
 - Use all observed monthly price records from Step-3
 - Defines earliest and latest observed price record for each material
 ===================================================================== */
-CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_MTRL_HISTORY_PROFILE_v6 AS
+CREATE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_MTRL_HISTORY_PROFILE_v6 AS
 SELECT
     aw.ndc_nmbr,
     aw.mtrl_num,
@@ -407,7 +407,7 @@ STEP 3C: CURRENT ACTIVE FLAG
 - Used only for diagnostics / coverage flag, not run eligibility
 - Replace with your actual business source if needed
 ===================================================================== */
-CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_ACTIVE_PRODUCTS_v6 AS
+CREATE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_ACTIVE_PRODUCTS_v6 AS
 WITH Active_Products AS
 (
     SELECT 
@@ -456,7 +456,7 @@ STEP 3D: RUN ELIGIBILITY
     eligible if first_price_dt exists and is before / on run history end
 - We keep coverage flags for diagnostics, not filtering
 ===================================================================== */
-CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_RUN_ELIGIBILITY_v6 AS
+CREATE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_RUN_ELIGIBILITY_v6 AS
 WITH base AS (
     SELECT
         r.run_id,
@@ -521,7 +521,7 @@ STEP 4: HISTORICAL OBSERVED PRICE PANEL
 - Observed price records inside the run history window
 - Run eligibility is already defined in STEP 3D
 ===================================================================== */
-CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_HIST_v6 AS
+CREATE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_HIST_v6 AS
 SELECT
     re.run_id,
     re.jump_off_month,
@@ -563,7 +563,7 @@ select count(distinct mtrl_num) from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_HIST_AGE_v
 STEP 5: HISTORY AGE
 - Tenure is based on first observed price date, not only rows in window
 ===================================================================== */
-CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_HIST_AGE_v6 AS
+CREATE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_HIST_AGE_v6 AS
 SELECT
     re.run_id,
     re.mtrl_num,
@@ -595,7 +595,7 @@ select count(distinct mtrl_num) from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_LAST_WAC_v
 /* =====================================================================
 STEP 6: LAST OBSERVED WAC
 ===================================================================== */
-CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_LAST_WAC_v6 AS
+CREATE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_LAST_WAC_v6 AS
 SELECT
     re.run_id,
     re.mtrl_num,
@@ -620,7 +620,7 @@ STEP 7: PRICE CHANGES
 - EXTREME defined at >= 10%
 ===================================================================== */
 
-CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_PRICE_CHANGES_v6 AS
+CREATE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_PRICE_CHANGES_v6 AS
 SELECT
     z.*,
 
@@ -711,7 +711,7 @@ group by 1
 -- /* ---------------------------------------------------------------------
 --    STEP 8: Valid increase events
 --    --------------------------------------------------------------------- */
--- CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_VALID_INCREASE_EVENTS_v6 AS
+-- CREATE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_VALID_INCREASE_EVENTS_v6 AS
 -- SELECT *
 -- FROM DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_PRICE_CHANGES_v6
 -- WHERE increase_flag = 1
@@ -727,7 +727,7 @@ select count(distinct mtrl_num) from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_VALID_INCR
 STEP 8: VALID INCREASE EVENTS
 - Trusted signal layer
 ===================================================================== */
-CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_VALID_INCREASE_EVENTS_v6 AS
+CREATE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_VALID_INCREASE_EVENTS_v6 AS
 SELECT *
 FROM DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_PRICE_CHANGES_v6
 WHERE 
@@ -776,7 +776,7 @@ select count(distinct mtrl_num) from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_EVENT_PROF
 STEP 8B: EVENT PROFILE
 - Preserve all eligible materials
 ===================================================================== */
-CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_EVENT_PROFILE_v6 AS
+CREATE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_EVENT_PROFILE_v6 AS
 SELECT
     re.run_id,
     re.mtrl_num,
@@ -805,7 +805,7 @@ select count(distinct mtrl_num) from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_LAST_INCRE
 STEP 9a: LAST VALID INCREASE DATE
 - Use valid events only
 ===================================================================== */
-CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_LAST_INCREASE_v6 AS
+CREATE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_LAST_INCREASE_v6 AS
 SELECT
     run_id,
     mtrl_num,
@@ -824,7 +824,7 @@ STEP 10: MAGNITUDE - MODEL INPUT STATS - BASELINE SIGNAL
 - 60/40 weighting for recent behavior
 - Improved fallback logic
 ===================================================================== */
-CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_NDC_MAGNITUDE_v6 AS
+CREATE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_NDC_MAGNITUDE_v6 AS
 
 WITH base_materials AS (
     SELECT DISTINCT
@@ -990,7 +990,7 @@ select * from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_NDC_TIMING_v6 order by mtrl_num, 
    - Recency-weighted (60/40)
 --------------------------------------------------------------------- */
 
-CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_NDC_TIMING_v6 AS
+CREATE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_NDC_TIMING_v6 AS
 
 WITH gaps_all AS (
     SELECT
@@ -1136,7 +1136,7 @@ FROM agg
 /* =====================================================================
 STEP 12.: THERAPEUTIC FALLBACK
 ===================================================================== */
-CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_THERAP_FALLBACK_v6 AS
+CREATE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_THERAP_FALLBACK_v6 AS
 WITH material_level AS (
     SELECT
         re.run_id,
@@ -1172,7 +1172,7 @@ GROUP BY 1,2
 /* =====================================================================
 STEP 12b.: MANUFACTURER FALLBACK
 ===================================================================== */
-CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_MFR_FALLBACK_v6 AS
+CREATE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_MFR_FALLBACK_v6 AS
 WITH material_level AS (
     SELECT
         re.run_id,
@@ -1217,7 +1217,7 @@ STEP 12c: FALLBACK ENRICHED TABLE
 - Establishes priority: THERAP > MFR > NONE
 ===================================================================== */
 
-CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_FALLBACK_ENRICHED_v6 AS
+CREATE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_FALLBACK_ENRICHED_v6 AS
 
 WITH base_materials AS (
     SELECT DISTINCT
@@ -1324,7 +1324,7 @@ STEP 12d: BASELINE RESOLVED ASSUMPTIONS
 - Adds stale timing override for non-new products
 ===================================================================== */
 
-CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_BASELINE_RESOLVED_v6 AS
+CREATE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_BASELINE_RESOLVED_v6 AS
 
 WITH base_materials AS (
     SELECT DISTINCT
@@ -1688,7 +1688,7 @@ STEP 13 FUTURE MONTHS (FIXED)
 - Use FULL ACTUAL timeline (not HIST table)
 ===================================================================== */
 
-CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_FUTURE_ACTUAL_MONTHS_v6 AS
+CREATE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_FUTURE_ACTUAL_MONTHS_v6 AS
 
 SELECT DISTINCT
     r.run_id,
@@ -1726,7 +1726,7 @@ STEP 14: FORECASTED WAC USING ORIGINAL COMPOUNDING LOGIC
 - Keeps stepwise increase logic from historical script
 ===================================================================== */
 
-CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_FORECASTED_v6 AS
+CREATE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_FORECASTED_v6 AS
 
 WITH base AS (
     SELECT
@@ -1822,7 +1822,7 @@ STEP 15: FORECAST EVALUATION DETAIL TABLE (POWER BI READY)
 - Designed to align with BRD evaluation/detail-table requirements
 ===================================================================== */
 
-CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_EVAL_DETAIL_v6 AS
+CREATE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_EVAL_DETAIL_v6 AS
 
 WITH forecast_base AS (
     SELECT
@@ -2279,7 +2279,7 @@ STEP 16: RUN-LEVEL SUMMARY
 - Core KPIs per run_id
 ===================================================================== */
 
-CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_EVAL_SUMMARY_RUN_v6 AS
+CREATE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_EVAL_SUMMARY_RUN_v6 AS
 SELECT
     run_id,
 
