@@ -123,19 +123,6 @@ FROM ranked
 WHERE rn = 1
 ;
 
-    SELECT
-        MATERIAL,
-        VENDOR,
-        THRPTC_CLSS_CDE,
-        BYNG_DESC,
-        ITM_CTVTY_CDE,
-        CURR_FLG,
-        NULLIF(TRIM(TO_VARCHAR(THRPTC_CLSS_CDE)), '') AS THRPTC_CLSS_CDE_CLEAN
-    FROM PRD_MT_BIG_BETS_DB.POC.t_material_pharma
-    WHERE CURR_FLG = 'Y'
-
-select material, count(distinct curr_flg) from PRD_MT_BIG_BETS_DB.POC.t_material_pharma group by 1 order by 2 desc 
-    
 
 /* ---------------------------------------------------------------------
    STEP 2b: Attributes for Materials - Therapeutic class, Manufacturer Name
@@ -332,10 +319,6 @@ select count(distinct mtrl_num) from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_ACTUAL_WAC
 --6,794 (before)
 
 
-
-
-select count(distinct mtrl_num) from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_ACTUAL_WAC_MONTHLY_v7
---10,304
 /* =====================================================================
    STEP 3: ACTUAL MONTHLY WAC & SLS QTY
    - Rebuild uniquely at ndc + mtrl + month
@@ -415,8 +398,7 @@ GROUP BY 1,2
 
 
 select count(distinct mtrl_num) from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_ACTIVE_PRODUCTS_v7 
---10304
---6,794 (before)
+--6,794
 
 /* =====================================================================
 STEP 3C: CURRENT ACTIVE FLAG
@@ -473,126 +455,8 @@ select run_id,data_coverage_flag, is_eligible_for_run, count(distinct mtrl_num)
 from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_RUN_ELIGIBILITY_v7 
 group by 1,2,3
 
-select count(distinct mtrl_num) from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_MTRL_LIFECYCLE_v7
---10304
-
 /* =====================================================================
-STEP-3D MATERIAL LIFECYCLE TABLE (V7)
-- Uses ACTUAL_WAC_MONTHLY_v7 (clean monthly WAC)
-- One row per material
-===================================================================== */
-
-CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_MTRL_LIFECYCLE_v7 AS
-
-WITH base AS (
-    SELECT
-        mtrl_num,
-        ndc_nmbr,
-        cal_month_start_dt,
-        actual_wac
-    FROM DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_ACTUAL_WAC_MONTHLY_v7
-),
-
-/*  Keep only valid WAC records */
-valid_prices AS (
-    SELECT *
-    FROM base
-    WHERE actual_wac IS NOT NULL
-      AND actual_wac > 0
-),
-
-/*  Rank to get first observed price */
-ranked AS (
-    SELECT
-        vp.*,
-
-        ROW_NUMBER() OVER (
-            PARTITION BY mtrl_num
-            ORDER BY cal_month_start_dt
-        ) AS rn_first
-
-    FROM valid_prices vp
-),
-
-/*  Aggregate lifecycle */
-agg AS (
-    SELECT
-        vp.mtrl_num,
-        MAX(vp.ndc_nmbr) AS ndc_nmbr,
-
-        MIN(vp.cal_month_start_dt) AS first_price_dt,
-        MAX(vp.cal_month_start_dt) AS last_price_dt,
-
-        COUNT(*) AS months_with_price_records
-
-    FROM valid_prices vp
-    GROUP BY
-        vp.mtrl_num
-),
-
-/*  First price */
-first_price AS (
-    SELECT
-        mtrl_num,
-        actual_wac AS first_wac_price
-    FROM ranked
-    WHERE rn_first = 1
-)
-
-SELECT
-    a.ndc_nmbr,
-    a.mtrl_num,
-
-    a.first_price_dt,
-    a.last_price_dt,
-    f.first_wac_price,
-
-    a.months_with_price_records,
-
-    /* =====================================================
-    DERIVED LIFECYCLE METRICS
-    ===================================================== */
-
-    DATEDIFF('month', a.first_price_dt, a.last_price_dt) + 1 AS lifecycle_length_months,
-
-    CASE
-        WHEN a.months_with_price_records < 6 THEN 'VERY_LOW_HISTORY'
-        WHEN a.months_with_price_records < 12 THEN 'LOW_HISTORY'
-        WHEN a.months_with_price_records < 24 THEN 'MEDIUM_HISTORY'
-        ELSE 'HIGH_HISTORY'
-    END AS history_bucket,
-
-    CASE
-        WHEN a.months_with_price_records < 12 THEN 1 ELSE 0
-    END AS is_short_history_flag,
-
-    CASE
-        WHEN a.months_with_price_records >= 24 THEN 1 ELSE 0
-    END AS has_sufficient_history_flag
-
-FROM agg a
-LEFT JOIN first_price f
-  ON a.mtrl_num = f.mtrl_num
-ORDER BY
-    a.mtrl_num;
-
-
-select count(distinct mtrl_num) from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_RUN_ELIGIBILITY_v7
---10304
-
-
-select run_id, is_eligible_for_run, count(distinct mtrl_num) 
-from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_RUN_ELIGIBILITY_v7
-group by 1,2
-
-select run_id, is_eligible_for_run, count(distinct mtrl_num) 
-from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_RUN_ELIGIBILITY_v7
-where is_active_flag =1
-group by 1,2
- 
-
-/* =====================================================================
-STEP 3E: RUN ELIGIBILITY
+STEP 3D: RUN ELIGIBILITY
 - Your final rule:
     eligible if first_price_dt exists and is before / on run history end
 - We keep coverage flags for diagnostics, not filtering
@@ -656,8 +520,7 @@ select run_id, data_coverage_flag, count(distinct mtrl_num) from DEV_MT_BIG_BETS
 group by 1,2
 
 select count(distinct mtrl_num) from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_HIST_v7 
--- 9,065
--- 5,786 (Before)
+5,786
 /* =====================================================================
 STEP 4: HISTORICAL OBSERVED PRICE PANEL
 - Observed price records inside the run history window
@@ -716,8 +579,7 @@ WHERE
 select * from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_HIST_AGE_v7
 
 select count(distinct mtrl_num) from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_HIST_AGE_v7
--- 9,355
--- 5,901 (Before)
+--5901
 
 /* =====================================================================
 STEP 5: HISTORY AGE
@@ -747,11 +609,24 @@ GROUP BY
 ;
 
 
+-- /* ---------------------------------------------------------------------
+--    STEP 6: Last observed WAC
+--    --------------------------------------------------------------------- */
+-- CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_LAST_WAC_v7 AS
+-- SELECT
+--     run_id,
+--     mtrl_num,
+--     MAX(cal_month_start_dt) AS last_hist_month,
+--     MAX_BY(wac_price, cal_month_start_dt) AS last_wac_price
+-- FROM DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_HIST_v7
+-- GROUP BY run_id, mtrl_num
+-- ;
+
+
 select * from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_LAST_WAC_v7 order by run_id, mtrl_num
 
 select count(distinct mtrl_num) from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_LAST_WAC_v7
---9355
---5901 (Before)
+--5901
 /* =====================================================================
 STEP 6: LAST OBSERVED WAC
 ===================================================================== */
@@ -774,10 +649,50 @@ GROUP BY
 
 
 
+select count(distinct mtrl_num) from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_LAST_WAC_v7 
+--5,786
+
+select median(price_change_pct) from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_PRICE_CHANGES_v7
+where price_change_pct>0
+
+select * from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_PRICE_CHANGES_v7 order by mtrl_num
+
+-- /* ---------------------------------------------------------------------
+--    STEP 7: Price changes
+--    --------------------------------------------------------------------- */
+-- CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_PRICE_CHANGES_v7 AS
+-- SELECT
+--     z.*,
+--     CASE WHEN z.prev_price IS NOT NULL AND z.wac_price > z.prev_price THEN 1 ELSE 0 END AS increase_flag,
+--     CASE WHEN z.prev_price > 0 THEN (z.wac_price - z.prev_price) / z.prev_price END AS price_change_pct
+--     -- CASE WHEN z.prev_price > 0 AND ((z.wac_price - z.prev_price) / z.prev_price) between 0 and 0.005 THEN 1 ELSE 0 END AS low_price_change_outlier_flag,
+--     -- CASE WHEN z.prev_price > 0 AND ((z.wac_price - z.prev_price) / z.prev_price) >= 5 THEN 1 ELSE 0 END AS high_price_change_outlier_flag
+-- FROM (
+--     SELECT
+--         h.*,
+--         LAG(wac_price) OVER (
+--             PARTITION BY run_id, mtrl_num
+--             ORDER BY cal_month_start_dt
+--         ) AS prev_price
+--     FROM DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_HIST_v7 h
+-- ) z
+-- ;
+
+
+select * from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_PRICE_CHANGES_v7 order by run_id, mtrl_num, cal_month_start_dt
 
 select count(distinct mtrl_num) from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_PRICE_CHANGES_v7
--- 9065
---5786 (Before)
+--5786
+
+
+select * from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_PRICE_CHANGES_v7 order by run_id, mtrl_num, cal_month_start_dt
+
+select count(distinct mtrl_num) from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_PRICE_CHANGES_v7
+
+select * from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_PRICE_CHANGES_v7 where price_change_pct < 0 order by run_id, cal_month_start_dt desc, mtrl_num
+
+select count(distinct mtrl_num) from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_PRICE_CHANGES_v7 where price_change_pct < 0 order by run_id, cal_month_start_dt desc, mtrl_num
+--308
 
 select * from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_PRICE_CHANGES_v7 where price_change_pct < 0 order by run_id desc , cal_month_start_dt desc, mtrl_num
 --308
@@ -874,9 +789,29 @@ FROM (
 ) z
 ;
 
-select count(distinct mtrl_num) from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_VALID_INCREASE_EVENTS_v7
---4,367
---3,167 (before)
+select count(distinct mtrl_num) from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_PRICE_CHANGES_v7 
+--5,786
+
+select low_price_change_outlier_flag, high_price_change_outlier_flag, count(distinct mtrl_num) from  DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_PRICE_CHANGES_v7
+group by 1,2
+
+select low_base_price_flag , count(distinct mtrl_num) from  DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_PRICE_CHANGES_v7
+group by 1
+
+-- /* ---------------------------------------------------------------------
+--    STEP 8: Valid increase events
+--    --------------------------------------------------------------------- */
+-- CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_VALID_INCREASE_EVENTS_v7 AS
+-- SELECT *
+-- FROM DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_PRICE_CHANGES_v7
+-- WHERE increase_flag = 1
+--   AND price_change_pct IS NOT NULL
+--   AND price_change_pct >= 0.005
+--   AND price_change_pct < 5
+-- ;
+
+select count(distinct mtrl_num) from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_VALID_INCREASE_EVENTS_v7 
+--3413
 
 /* =====================================================================
 STEP 8: VALID INCREASE EVENTS
@@ -893,11 +828,40 @@ WHERE
 --   AND price_change_pct < 5
 ;
 
+--Different Percentiles for Price change
+SELECT
+    COUNT(*) AS total_events,
+
+    -- lower tail
+    APPROX_PERCENTILE(price_change_pct, 0.01) AS p01,
+    APPROX_PERCENTILE(price_change_pct, 0.05) AS p05,
+    APPROX_PERCENTILE(price_change_pct, 0.10) AS p10,
+
+    -- central range
+    APPROX_PERCENTILE(price_change_pct, 0.25) AS p25,
+    APPROX_PERCENTILE(price_change_pct, 0.50) AS p50,  -- median
+    APPROX_PERCENTILE(price_change_pct, 0.75) AS p75,
+
+    -- upper tail
+    APPROX_PERCENTILE(price_change_pct, 0.90) AS p90,
+    APPROX_PERCENTILE(price_change_pct, 0.95) AS p95,
+    APPROX_PERCENTILE(price_change_pct, 0.99) AS p99
+
+FROM DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_VALID_INCREASE_EVENTS_v7;
+
+--Before limiting extremes:
+-- 95% percentile: 0.1055853481	
+-- 99th percentile: 0.3949516769
+
+--After limiting extremes:
+-- 95% percentile: 0.09815844836	
+-- 99th percentile: 0.0998109069
+
+
 select * from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_EVENT_PROFILE_v7 order by run_id, mtrl_num
 
 select count(distinct mtrl_num) from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_EVENT_PROFILE_v7 
---9,355
---5,901 (Before)
+--5901
 /* =====================================================================
 STEP 8B: EVENT PROFILE
 - Preserve all eligible materials
@@ -925,9 +889,22 @@ GROUP BY 1,2
 ;
 
 
+-- /* ---------------------------------------------------------------------
+--    STEP 9: Last increase date
+--    --------------------------------------------------------------------- */
+-- CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_LAST_INCREASE_v7 AS
+-- SELECT
+--     run_id,
+--     mtrl_num,
+--     MAX(cal_month_start_dt) AS last_increase_dt
+-- FROM DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_PRICE_CHANGES_v7
+-- GROUP BY run_id, mtrl_num
+-- ;
+
+select * from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_LAST_INCREASE_v7 order by run_id, mtrl_num
+
 select count(distinct mtrl_num) from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_LAST_INCREASE_v7
---4,367
---3,413 (Before)
+--3413
 /* =====================================================================
 STEP 9a: LAST VALID INCREASE DATE
 - Use valid events only
@@ -940,6 +917,76 @@ SELECT
 FROM DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_VALID_INCREASE_EVENTS_v7
 GROUP BY 1,2
 ;
+
+
+
+
+-- /* ---------------------------------------------------------------------
+--    STEP 10: NDC magnitude
+--    --------------------------------------------------------------------- */
+-- CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_NDC_MAGNITUDE_v7 AS
+-- WITH full_events AS (
+--     SELECT
+--         run_id,
+--         mtrl_num,
+--         COUNT(*) AS ndc_full_events
+--     FROM DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_VALID_INCREASE_EVENTS_v7
+--     GROUP BY run_id, mtrl_num
+-- ),
+
+-- events_2yr AS (
+--     SELECT
+--         fi.run_id,
+--         fi.mtrl_num,
+--         fi.price_change_pct,
+
+--         CASE WHEN fi.cal_month_start_dt >= fi.roll_1yr_start THEN 1 ELSE 0 END AS flag_1yr,
+--         CASE WHEN fi.cal_month_start_dt >= fi.roll_2yr_start
+--                AND fi.cal_month_start_dt < fi.roll_1yr_start THEN 1 ELSE 0 END AS flag_prev_1yr
+
+--     FROM DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_VALID_INCREASE_EVENTS_v7 fi
+--     WHERE fi.cal_month_start_dt >= fi.roll_2yr_start
+-- ),
+
+-- agg AS (
+--     SELECT
+--         run_id,
+--         mtrl_num,
+--         MAX(flag_1yr) AS has_event_1yr,
+--         MAX(flag_prev_1yr) AS has_event_prev_1yr,
+--         COUNT(*) AS total_events_2yr,
+--         AVG(price_change_pct) AS avg_last_2yr_pi,
+--         AVG(CASE WHEN flag_1yr = 1 THEN price_change_pct END) AS avg_1yr_pi,
+--         AVG(CASE WHEN flag_prev_1yr = 1 THEN price_change_pct END) AS avg_prev_1yr_pi
+--     FROM events_2yr
+--     GROUP BY run_id, mtrl_num
+-- )
+
+-- SELECT
+--     COALESCE(a.run_id, f.run_id) AS run_id,
+--     COALESCE(a.mtrl_num, f.mtrl_num) AS mtrl_num,
+
+--     CASE
+--         WHEN has_event_1yr = 1 AND has_event_prev_1yr = 1
+--             THEN 0.6 * avg_1yr_pi + 0.4 * avg_prev_1yr_pi
+--         WHEN total_events_2yr >= 2
+--             THEN avg_last_2yr_pi
+--         WHEN total_events_2yr = 1
+--             THEN 0.5 * avg_last_2yr_pi
+--         ELSE 0
+--     END AS ndc_exp_wac_pi_pct,
+
+--     COALESCE(f.ndc_full_events, 0) AS ndc_full_events,
+--     COALESCE(a.total_events_2yr, 0) AS ndc_roll_events
+
+-- FROM agg a
+-- FULL OUTER JOIN full_events f
+--   ON a.run_id = f.run_id
+--  AND a.mtrl_num = f.mtrl_num
+-- ;
+
+
+
 
 
 /* =====================================================================
@@ -1105,6 +1152,8 @@ LEFT JOIN loe_stats ls
 
 
 
+select * from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_NDC_TIMING_v7 order by mtrl_num, run_id
+
 /* ---------------------------------------------------------------------
    STEP 11: NDC timing (days between price changes)
    - Gap-based timing model
@@ -1255,6 +1304,7 @@ FROM agg
 
 
 
+
 /* =====================================================================
 STEP 12.: THERAPEUTIC FALLBACK
 ===================================================================== */
@@ -1326,6 +1376,11 @@ FROM material_level
 GROUP BY 1,2
 ;
 
+
+
+select * from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_FALLBACK_ENRICHED_v7 order by run_id, mtrl_num
+
+select * from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_FALLBACK_ENRICHED_v7 where fallback_priority = 'NO THERAP/MFR AVAILABLE'
 
 /* =====================================================================
 STEP 12c: FALLBACK ENRICHED TABLE
@@ -1428,6 +1483,14 @@ LEFT JOIN DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_MFR_FALLBACK_v7 mf
  AND a.manufacturer_name = mf.manufacturer_name
 ;
 
+-- select * from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_BASELINE_RESOLVED_v7 order by run_id, mtrl_num, cal
+
+-- select count(distinct mtrl_num) from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_BASELINE_RESOLVED_v7
+-- --5786
+
+
+select * from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_BASELINE_RESOLVED_v7 where price_change_pct < 0 order by run_id, cal_month_start_dt desc, mtrl_num
+
 
 /* =====================================================================
 STEP 12d: BASELINE RESOLVED ASSUMPTIONS
@@ -1512,7 +1575,6 @@ joined AS (
         attr.cust_prod_category,
         attr.product_family,
         attr.sell_dscr,
-        attr.ITM_CTVTY_CDE,
         
         bm.jump_off_month,
 
@@ -1553,7 +1615,7 @@ joined AS (
     LEFT JOIN hist_age ha
         ON bm.run_id = ha.run_id
        AND bm.mtrl_num = ha.mtrl_num
-    LEFT JOIN DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_NDC_MAGNITUDE_v7 ms
+    LEFT JOIN DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_MODEL_INPUT_STATS_v7 ms
         ON bm.run_id = ms.run_id
        AND bm.mtrl_num = ms.mtrl_num
     LEFT JOIN DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_NDC_TIMING_v7 nt
@@ -1751,7 +1813,6 @@ SELECT
     cust_prod_category,
     product_family,
     sell_dscr,
-    ITM_CTVTY_CDE,
     
     jump_off_month,
 
@@ -1876,7 +1937,6 @@ WITH base AS (
         br.cust_prod_category,
         br.product_family,
         br.sell_dscr,
-        br.ITM_CTVTY_CDE,
         br.jump_off_month,
         br.last_hist_month,
         br.last_wac_price,
@@ -1931,7 +1991,6 @@ SELECT
     cust_prod_category,
     product_family,
     sell_dscr,
-    ITM_CTVTY_CDE,
     jump_off_month,
     last_hist_month,
     last_wac_price,
@@ -1957,6 +2016,164 @@ FROM calc
 ;
 
 
+--QC for 14
+--1
+-- MODEL driven vs. OVerrides
+SELECT
+    run_id,
+    forecast_source,
+    COUNT(DISTINCT mtrl_num) AS material_cnt
+FROM DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_BASELINE_RESOLVED_v7
+GROUP BY
+    run_id,
+    forecast_source
+ORDER BY
+    run_id,
+    material_cnt DESC;
+
+--2
+-- Post LOE increases 
+SELECT
+    run_id,
+    COUNT(DISTINCT mtrl_num) AS total_materials,
+
+    COUNT(DISTINCT CASE
+        WHEN forecast_source = 'OVERRIDE_LOE_FLAT'
+        THEN mtrl_num
+    END) AS loe_flat_materials,
+
+    COUNT(DISTINCT CASE
+        WHEN usa_patent_expiry IS NOT NULL
+        THEN mtrl_num
+    END) AS materials_with_loe
+
+FROM DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_BASELINE_RESOLVED_v7
+GROUP BY
+    run_id
+ORDER BY
+    run_id;
+
+--3
+-- Model driven Timing vs. Timing overrides 
+SELECT
+    run_id,
+    timing_source,
+    COUNT(DISTINCT mtrl_num) AS material_cnt
+FROM DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_BASELINE_RESOLVED_v7
+GROUP BY
+    run_id,
+    timing_source
+ORDER BY
+    run_id,
+    material_cnt DESC;
+
+--4
+--Timing percentiles
+SELECT
+    run_id,
+
+    APPROX_PERCENTILE(expected_days_between_increases, 0.50) AS p50_days,
+    APPROX_PERCENTILE(expected_days_between_increases, 0.75) AS p75_days,
+    APPROX_PERCENTILE(expected_days_between_increases, 0.90) AS p90_days,
+    APPROX_PERCENTILE(expected_days_between_increases, 0.95) AS p95_days,
+
+    COUNT(*) AS total_rows
+
+FROM DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_BASELINE_RESOLVED_v7
+WHERE expected_days_between_increases IS NOT NULL
+GROUP BY
+    run_id;
+
+--5
+SELECT
+    run_id,
+    n_expected_increases,
+    COUNT(*) AS row_cnt
+FROM DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_FORECASTED_v7
+GROUP BY
+    run_id,
+    n_expected_increases
+ORDER BY
+    run_id,
+    n_expected_increases;
+
+--6
+
+SELECT
+    run_id,
+
+    AVG(n_expected_increases) AS avg_increases,
+    MAX(n_expected_increases) AS max_increases,
+
+    COUNT(DISTINCT mtrl_num) AS materials
+
+FROM DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_FORECASTED_v7
+GROUP BY
+    run_id;
+
+
+--7
+SELECT
+    run_id,
+    mtrl_num,
+    forecast_month,
+    last_wac_price,
+    forecasted_wac,
+
+    expected_wac_pi_pct,
+    n_expected_increases,
+
+    forecasted_wac / NULLIF(last_wac_price, 0) AS growth_factor
+
+FROM DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_FORECASTED_v7
+WHERE forecasted_wac IS NOT NULL
+  AND forecasted_wac > 1.5 * last_wac_price   -- threshold
+ORDER BY
+    growth_factor DESC
+LIMIT 50;
+
+
+--8
+SELECT
+    run_id,
+
+    APPROX_PERCENTILE(forecasted_wac / NULLIF(last_wac_price, 0), 0.50) AS p50_growth,
+    APPROX_PERCENTILE(forecasted_wac / NULLIF(last_wac_price, 0), 0.90) AS p90_growth,
+    APPROX_PERCENTILE(forecasted_wac / NULLIF(last_wac_price, 0), 0.95) AS p95_growth,
+    MAX(forecasted_wac / NULLIF(last_wac_price, 0)) AS max_growth
+
+FROM DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_FORECASTED_v7
+GROUP BY
+    run_id;
+
+
+--9
+SELECT
+    run_id,
+    COUNT(DISTINCT CASE
+        WHEN n_expected_increases = 0 THEN mtrl_num
+    END) AS no_increase_materials,
+
+    COUNT(DISTINCT mtrl_num) AS total_materials,
+
+    (COUNT(DISTINCT CASE
+        WHEN n_expected_increases = 0 THEN mtrl_num
+    END)) / COUNT(DISTINCT mtrl_num) AS ratio
+
+FROM DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_FORECASTED_v7
+GROUP BY
+    run_id;
+
+
+select pass_flag_vs_actual_error_threshold, count(*) 
+from
+DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_EVAL_DETAIL_v7 
+group by 
+1
+
+select * from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_EVAL_DETAIL_v7 order by run_id, mtrl_num, forecast_month
+
+
 /* =====================================================================
 STEP 15: FORECAST EVALUATION DETAIL TABLE (POWER BI READY)
 - One row per run_id + mtrl_num + forecast_month
@@ -1974,7 +2191,6 @@ WITH forecast_base AS (
         f.cust_prod_category,
         f.product_family,
         f.sell_dscr,
-        f.ITM_CTVTY_CDE,
         
         f.forecast_month,
 
@@ -2295,7 +2511,6 @@ SELECT
     cust_prod_category,
     product_family,
     sell_dscr,
-    ITM_CTVTY_CDE,
         
 
     therapeutic_class,
@@ -2403,18 +2618,22 @@ where forecast_month is not null
 ;
 
 
+select * from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_EVAL_DETAIL_v7
+
+select count(distinct mtrl_num) from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_EVAL_DETAIL_v7
+
+select * from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_EVAL_DETAIL_v7 where forecast_new is null
+
+
+
+select * from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_EVAL_SUMMARY_RUN_v7 
+
 select run_id, row_cnt,material_cnt, wac_wape_new, dollar_wape_new, mape_new_wac, mape_new_dollars
 from
 DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_EVAL_SUMMARY_RUN_v7 
 
-select * from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_DECREASE_FLAGS_v7 
-
-select has_price_decrease_flag, count(distinct mtrl_num) from 
-DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_DECREASE_FLAGS_v7 
-group by 1
-
 /* =====================================================================
-STEP-15b: DECREASE FLAGS WITH SIGNIFICANT DECREASE (>= 5%)
+STEP: DECREASE FLAGS WITH SIGNIFICANT DECREASE (>= 5%)
 ===================================================================== */
 
 CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_DECREASE_FLAGS_v7 AS
@@ -2520,10 +2739,6 @@ GROUP BY
 select count(distinct mtrl_num) from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_EVAL_v7_WITH_DECREASE_FLAG where has_price_decrease_flag > 0
 
 
-select itm_ctvty_cde, count(*) from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_EVAL_v7_WITH_DECREASE_FLAG group by 1
-
-select * from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_EVAL_v7_WITH_DECREASE_FLAG
-
 /* =====================================================================
 Step-15c EVAL TABLE WITH DECREASE FLAG
 - Adds decrease flag for dashboard filtering
@@ -2535,6 +2750,7 @@ SELECT
     e.*,
 
     COALESCE(d.has_price_decrease_flag, 0) AS has_price_decrease_flag,
+    COALESCE(d.has_significant_decrease_flag, 0) AS has_significant_decrease_flag,
     COALESCE(d.decrease_event_count, 0) AS decrease_event_count,
     d.first_decrease_dt,
     d.last_decrease_dt,
@@ -2544,60 +2760,4 @@ FROM DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_EVAL_DETAIL_v7 e
 LEFT JOIN DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_DECREASE_FLAGS_v7 d
   ON e.run_id = d.run_id
  AND e.mtrl_num = d.mtrl_num
-;
-
-
-
-/* =====================================================================
-STEP 16: RUN-LEVEL SUMMARY
-- Core KPIs per run_id
-===================================================================== */
-
-CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_EVAL_SUMMARY_RUN_v7 AS
-SELECT
-    run_id,
-
-    COUNT(*) AS row_cnt,
-    COUNT(DISTINCT mtrl_num) AS material_cnt,
-    COUNT(DISTINCT ndc_nmbr) AS ndc_cnt,
-
-    /* =========================================================
-    WAPE METRICS
-    ========================================================= */
-    SUM(ABS(error_new_dollars))
-        / NULLIF(SUM(ABS(actual_dollars)), 0) AS dollar_wape_new,
-
-    SUM(ABS(error_new_wac))
-        / NULLIF(SUM(ABS(actual_wac)), 0) AS wac_wape_new,
-
-    /* =========================================================
-    MAPE / BIAS
-    ========================================================= */
-    AVG(ape_new_dollars) AS mape_new_dollars,
-    AVG(ape_new_wac) AS mape_new_wac,
-
-    AVG(bias_new_dollars) AS mean_bias_new_dollars,
-    AVG(bias_new_wac) AS mean_bias_new_wac,
-
-    /* =========================================================
-    EXCEPTION COUNTS
-    ========================================================= */
-    SUM(CASE WHEN review_priority = 'CRITICAL' THEN 1 ELSE 0 END) AS critical_row_cnt,
-    SUM(CASE WHEN review_priority = 'MODERATE' THEN 1 ELSE 0 END) AS moderate_row_cnt,
-    SUM(CASE WHEN forecast_explosion_flag = 1 THEN 1 ELSE 0 END) AS explosion_row_cnt,
-
-    /* =========================================================
-    THRESHOLD PASS COUNTS
-    ========================================================= */
-    SUM(CASE WHEN pass_flag_vs_actual_error_threshold = 1 THEN 1 ELSE 0 END) AS pass_actual_threshold_row_cnt,
-    SUM(CASE WHEN pass_flag_vs_materiality_threshold = 1 THEN 1 ELSE 0 END) AS pass_materiality_row_cnt,
-
-    SUM(CASE WHEN pass_flag_vs_actual_error_threshold = 1 THEN 1 ELSE 0 END)/COUNT(*) as pass_actual_threshold_pct,
-    SUM(CASE WHEN pass_flag_vs_materiality_threshold = 1 THEN 1 ELSE 0 END)/COUNT(*) as pass_materiality_pct
-
-FROM DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_EVAL_DETAIL_v7
-GROUP BY
-    run_id
-ORDER BY
-    run_id
 ;
