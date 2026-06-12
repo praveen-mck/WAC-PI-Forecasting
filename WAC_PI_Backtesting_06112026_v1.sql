@@ -444,6 +444,108 @@ LEFT JOIN
 
 
 
+/* =====================================================================
+MATERIAL LIFECYCLE TABLE (V7)
+- Uses ACTUAL_WAC_MONTHLY_v7 (clean monthly WAC)
+- One row per material
+===================================================================== */
+
+CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_MTRL_LIFECYCLE_v7 AS
+
+WITH base AS (
+    SELECT
+        mtrl_num,
+        ndc_nmbr,
+        cal_month_start_dt,
+        actual_wac
+    FROM DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_ACTUAL_WAC_MONTHLY_v7
+),
+
+/*  Keep only valid WAC records */
+valid_prices AS (
+    SELECT *
+    FROM base
+    WHERE actual_wac IS NOT NULL
+      AND actual_wac > 0
+),
+
+/*  Rank to get first observed price */
+ranked AS (
+    SELECT
+        vp.*,
+
+        ROW_NUMBER() OVER (
+            PARTITION BY mtrl_num
+            ORDER BY cal_month_start_dt
+        ) AS rn_first
+
+    FROM valid_prices vp
+),
+
+/*  Aggregate lifecycle */
+agg AS (
+    SELECT
+        vp.mtrl_num,
+        MAX(vp.ndc_nmbr) AS ndc_nmbr,
+
+        MIN(vp.cal_month_start_dt) AS first_price_dt,
+        MAX(vp.cal_month_start_dt) AS last_price_dt,
+
+        COUNT(*) AS months_with_price_records
+
+    FROM valid_prices vp
+    GROUP BY
+        vp.mtrl_num
+),
+
+/*  First price */
+first_price AS (
+    SELECT
+        mtrl_num,
+        actual_wac AS first_wac_price
+    FROM ranked
+    WHERE rn_first = 1
+)
+
+SELECT
+    a.ndc_nmbr,
+    a.mtrl_num,
+
+    a.first_price_dt,
+    a.last_price_dt,
+    f.first_wac_price,
+
+    a.months_with_price_records,
+
+    /* =====================================================
+    DERIVED LIFECYCLE METRICS
+    ===================================================== */
+
+    DATEDIFF('month', a.first_price_dt, a.last_price_dt) + 1 AS lifecycle_length_months,
+
+    CASE
+        WHEN a.months_with_price_records < 6 THEN 'VERY_LOW_HISTORY'
+        WHEN a.months_with_price_records < 12 THEN 'LOW_HISTORY'
+        WHEN a.months_with_price_records < 24 THEN 'MEDIUM_HISTORY'
+        ELSE 'HIGH_HISTORY'
+    END AS history_bucket,
+
+    CASE
+        WHEN a.months_with_price_records < 12 THEN 1 ELSE 0
+    END AS is_short_history_flag,
+
+    CASE
+        WHEN a.months_with_price_records >= 24 THEN 1 ELSE 0
+    END AS has_sufficient_history_flag
+
+FROM agg a
+LEFT JOIN first_price f
+  ON a.mtrl_num = f.mtrl_num
+ORDER BY
+    a.mtrl_num;
+
+
+
 
 select * from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_RUN_ELIGIBILITY_v7 order by mtrl_num
 
