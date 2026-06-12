@@ -2734,132 +2734,135 @@ select run_id, row_cnt,material_cnt, wac_wape_new, dollar_wape_new, mape_new_wac
 from
 DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_EVAL_SUMMARY_RUN_v7 
 
-/* =====================================================================
-STEP: DECREASE FLAGS WITH SIGNIFICANT DECREASE (>= 5%)
-===================================================================== */
 
-CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_DECREASE_FLAGS_v7 AS
 
-WITH price_changes AS (
+---------------------------------------------------------------------------------------
+-- FINAL TABLE: EVAL v8 WITH DECREASE FLAGS (FULL BUILD)
+----------------------------------------------------------------------------------------
+CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_EVAL_v8_WITH_DECREASE_FLAG AS
+
+/* =========================================================
+STEP 1: BASE ACTUALS (clean monthly WAC)
+========================================================= */
+
+WITH base_actuals AS (
     SELECT
-        h.run_id,
-        h.mtrl_num,
-        h.ndc_nmbr,
-        h.cal_month_start_dt,
-        h.wac_price,
-
-        LAG(h.wac_price) OVER (
-            PARTITION BY h.run_id, h.mtrl_num
-            ORDER BY h.cal_month_start_dt
-        ) AS prev_wac_price
-
-    FROM DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_HIST_v7 h
+        ndc_nmbr,
+        mtrl_num,
+        cal_month_start_dt,
+        actual_wac
+    FROM DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_ACTUAL_WAC_MONTHLY_v7
 ),
 
-classified AS (
+/* =========================================================
+STEP 2: PRICE CHANGE CALCULATION
+========================================================= */
+
+price_changes AS (
     SELECT
-        run_id,
+        b.*,
+
+        LAG(actual_wac) OVER (
+            PARTITION BY mtrl_num
+            ORDER BY cal_month_start_dt
+        ) AS prev_wac_price
+
+    FROM base_actuals b
+),
+
+classified_changes AS (
+    SELECT
         mtrl_num,
         ndc_nmbr,
         cal_month_start_dt,
-        wac_price,
+        actual_wac,
         prev_wac_price,
 
-        /* ============================================
-           ANY DECREASE
-           ============================================ */
+        /* % change */
+        CASE
+            WHEN prev_wac_price IS NOT NULL AND prev_wac_price <> 0
+            THEN (actual_wac - prev_wac_price) / prev_wac_price
+        END AS price_change_pct,
+
+        /* any decrease */
         CASE
             WHEN prev_wac_price IS NOT NULL
-             AND wac_price < prev_wac_price
+             AND actual_wac < prev_wac_price
             THEN 1 ELSE 0
         END AS decrease_event_flag,
 
-        /* ============================================
-           % CHANGE
-           ============================================ */
+        /* significant decrease ≥ 5% */
         CASE
             WHEN prev_wac_price IS NOT NULL
              AND prev_wac_price <> 0
-            THEN (wac_price - prev_wac_price) / prev_wac_price
-            ELSE NULL
-        END AS price_change_pct,
-
-        /* ============================================
-            NEW: SIGNIFICANT DECREASE (>= 5%)
-           ============================================ */
-        CASE
-            WHEN prev_wac_price IS NOT NULL
-             AND prev_wac_price <> 0
-             AND (wac_price - prev_wac_price) / prev_wac_price <= -0.05
+             AND (actual_wac - prev_wac_price) / prev_wac_price <= -0.05
             THEN 1 ELSE 0
         END AS significant_decrease_event_flag
 
     FROM price_changes
+),
+
+/* =========================================================
+STEP 3: MATERIAL-LEVEL DECREASE FLAGS
+========================================================= */
+
+decrease_flags AS (
+    SELECT
+        mtrl_num,
+
+        MAX(decrease_event_flag) AS has_decrease_flag,
+
+        MAX(significant_decrease_event_flag) AS has_significant_decrease_flag,
+
+        COUNT(CASE WHEN decrease_event_flag = 1 THEN 1 END) AS decrease_event_count,
+
+        COUNT(CASE WHEN significant_decrease_event_flag = 1 THEN 1 END) 
+            AS significant_decrease_event_count,
+
+        MIN(CASE WHEN decrease_event_flag = 1 THEN cal_month_start_dt END) 
+            AS first_decrease_dt,
+
+        MAX(CASE WHEN decrease_event_flag = 1 THEN cal_month_start_dt END) 
+            AS last_decrease_dt,
+
+        MIN(price_change_pct) AS min_decrease_pct
+
+    FROM classified_changes
+    GROUP BY mtrl_num
+),
+
+/* =========================================================
+STEP 4: BASE FORECAST/EVAL TABLE (v7)
+========================================================= */
+
+eval_base AS (
+    SELECT *
+    FROM DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_EVAL_DETAIL_v7
+),
+
+/* =========================================================
+STEP 5: FINAL JOIN
+========================================================= */
+
+final AS (
+    SELECT
+        e.*,
+
+        /* ✅ CORE FLAGS (what you asked for) */
+        COALESCE(d.has_decrease_flag, 0) AS has_decrease_flag,
+        COALESCE(d.has_significant_decrease_flag, 0) AS has_significant_decrease_flag,
+
+        /* ✅ OPTIONAL DIAGNOSTICS */
+        d.decrease_event_count,
+        d.significant_decrease_event_count,
+        d.first_decrease_dt,
+        d.last_decrease_dt,
+        d.min_decrease_pct
+
+    FROM eval_base e
+    LEFT JOIN decrease_flags d
+      ON e.mtrl_num = d.mtrl_num
 )
 
-SELECT
-    run_id,
-    mtrl_num,
-    MAX(ndc_nmbr) AS ndc_nmbr,
-
-    /* ============================================
-       ANY DECREASE
-       ============================================ */
-    MAX(decrease_event_flag) AS has_price_decrease_flag,
-
-    COUNT(CASE WHEN decrease_event_flag = 1 THEN 1 END) AS decrease_event_count,
-
-    MIN(CASE WHEN decrease_event_flag = 1 THEN cal_month_start_dt END) AS first_decrease_dt,
-    MAX(CASE WHEN decrease_event_flag = 1 THEN cal_month_start_dt END) AS last_decrease_dt,
-
-    MIN(CASE WHEN decrease_event_flag = 1 THEN price_change_pct END) AS min_decrease_pct,
-
-    /* ============================================
-        NEW: SIGNIFICANT DECREASE METRICS
-       ============================================ */
-
-    MAX(significant_decrease_event_flag) AS has_significant_decrease_flag,
-
-    COUNT(CASE WHEN significant_decrease_event_flag = 1 THEN 1 END) AS significant_decrease_event_count,
-
-    MIN(CASE WHEN significant_decrease_event_flag = 1 THEN cal_month_start_dt END) 
-        AS first_significant_decrease_dt,
-
-    MAX(CASE WHEN significant_decrease_event_flag = 1 THEN cal_month_start_dt END) 
-        AS last_significant_decrease_dt,
-
-    MIN(CASE WHEN significant_decrease_event_flag = 1 THEN price_change_pct END) 
-        AS min_significant_decrease_pct
-
-FROM classified
-GROUP BY
-    run_id,
-    mtrl_num
-;
-
-
-select count(distinct mtrl_num) from DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_EVAL_v7_WITH_DECREASE_FLAG where has_price_decrease_flag > 0
-
-
-/* =====================================================================
-Step-15c EVAL TABLE WITH DECREASE FLAG
-- Adds decrease flag for dashboard filtering
-===================================================================== */
-
-CREATE OR REPLACE TABLE DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_EVAL_v7_WITH_DECREASE_FLAG AS
-
-SELECT
-    e.*,
-
-    COALESCE(d.has_price_decrease_flag, 0) AS has_price_decrease_flag,
-    COALESCE(d.has_significant_decrease_flag, 0) AS has_significant_decrease_flag,
-    COALESCE(d.decrease_event_count, 0) AS decrease_event_count,
-    d.first_decrease_dt,
-    d.last_decrease_dt,
-    d.min_decrease_pct
-
-FROM DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_EVAL_DETAIL_v7 e
-LEFT JOIN DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_DECREASE_FLAGS_v7 d
-  ON e.run_id = d.run_id
- AND e.mtrl_num = d.mtrl_num
-;
+SELECT *
+FROM final;
