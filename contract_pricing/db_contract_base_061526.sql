@@ -1,3 +1,6 @@
+--Author Krista Mar
+--intent: create a base table for contract pricing with the following granularity: Contract Price, Customer info, Manufacturer, Prod Category, Thera Cls, Mtrl number, NDC
+
 CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.vw_q_contract_price_base AS
 
 WITH
