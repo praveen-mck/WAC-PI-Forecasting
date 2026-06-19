@@ -1717,7 +1717,7 @@ joined AS (
     LEFT JOIN hist_age ha
         ON bm.run_id = ha.run_id
        AND bm.mtrl_num = ha.mtrl_num
-    LEFT JOIN DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_MODEL_INPUT_STATS_v7 ms
+    LEFT JOIN DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_NDC_MAGNITUDE_v7 ms
         ON bm.run_id = ms.run_id
        AND bm.mtrl_num = ms.mtrl_num
     LEFT JOIN DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_NDC_TIMING_v7 nt
@@ -1978,7 +1978,7 @@ SELECT DISTINCT
     aw.mtrl_num,
     aw.cal_month_start_dt AS forecast_month
 
-FROM DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_RUNS r
+FROM DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_RUNS_v7 r
 
 /*  Use FULL observed timeline (this is the fix) */
 JOIN DEV_MT_BIG_BETS_DB.POC.WAC_PI_BT_ACTUAL_WAC_MONTHLY aw
