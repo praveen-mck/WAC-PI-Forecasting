@@ -2848,11 +2848,11 @@ final AS (
     SELECT
         e.*,
 
-        /* ✅ CORE FLAGS (what you asked for) */
+        /*  CORE FLAGS  */
         COALESCE(d.has_decrease_flag, 0) AS has_decrease_flag,
         COALESCE(d.has_significant_decrease_flag, 0) AS has_significant_decrease_flag,
 
-        /* ✅ OPTIONAL DIAGNOSTICS */
+        /*  OPTIONAL DIAGNOSTICS */
         d.decrease_event_count,
         d.significant_decrease_event_count,
         d.first_decrease_dt,
