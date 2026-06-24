@@ -18,7 +18,7 @@
 /* ---------------------------------------------------------------------
    STEP 0: Backtest runs
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_RUNS_v7 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_RUNS_v9 AS
 SELECT
     'BT_2024_01' AS run_id,
     TO_DATE('2024-01-01') AS jump_off_month,
@@ -63,7 +63,7 @@ select * from uspd_analytics_den.analytics_gold.WAC_PI_FORECAST_BASELINE_PRICE_V
 select count(distinct COPA_MTRL_NUM) from uspd_analytics_den.analytics_gold.WAC_PI_FORECAST_BASELINE_PRICE_V2_FINAL_MODIFIED_0603
 --11077
 
-select count(distinct MTRL_NUM) from uspd_analytics_den.analytics_gold.WAC_PI_BT_UNIVERSE_v7
+select count(distinct MTRL_NUM) from uspd_analytics_den.analytics_gold.WAC_PI_BT_UNIVERSE_v9
 --10325
 
 
@@ -72,7 +72,7 @@ select count(distinct MTRL_NUM) from uspd_analytics_den.analytics_gold.WAC_PI_BT
    - Deduplicate to one row per ndc + material
    - Keep the most frequent category if multiple exist
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_UNIVERSE_v7 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_UNIVERSE_v9 AS
 WITH base AS (
     SELECT
         COPA_NDC_NUM       AS ndc_nmbr,
@@ -130,7 +130,7 @@ WHERE rn = 1
    - TRY_TO_NUMBER used only for VSTX join
    - Add ITM_CTVTY_CDE and CURR_FLG from material master
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BF_ATTRS_v7 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BF_ATTRS_v9 AS
 WITH
 mtrl AS (
     SELECT
@@ -224,7 +224,7 @@ SELECT
     /* NEW: Brand coverage flag */
     CASE WHEN nd.BRND_NAM IS NOT NULL THEN 1 ELSE 0 END AS has_brand_match
 
-FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_UNIVERSE_v7 u
+FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_UNIVERSE_v9 u
 
 LEFT JOIN mtrl m
     ON u.mtrl_num = m.MATERIAL
@@ -247,7 +247,7 @@ LEFT JOIN ahfs a
    STEP 2b: Append EP Patent Expiry
    - One row per ndc + material
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BF_ATTRS_UPD_v7 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BF_ATTRS_UPD_v9 AS
 WITH
 EP as (
     select 
@@ -264,7 +264,7 @@ select
     attrs_v1.*,
     EP.usa_patent_expiry
 from
-    uspd_analytics_den.analytics_gold.WAC_PI_BF_ATTRS_v7 attrs_v1
+    uspd_analytics_den.analytics_gold.WAC_PI_BF_ATTRS_v9 attrs_v1
 left join
     EP
 ON
@@ -274,7 +274,7 @@ ON
    STEP 2c: Deduplicate attributes
    - One row per ndc + material
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_ATTRS_DEDUP_v7 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_ATTRS_DEDUP_v9 AS
 WITH ranked AS (
     SELECT
         a.*,
@@ -288,7 +288,7 @@ WITH ranked AS (
                 a.ndc_nmbr,
                 a.mtrl_num
         ) AS rn
-    FROM uspd_analytics_den.analytics_gold.WAC_PI_BF_ATTRS_UPD_v7 a
+    FROM uspd_analytics_den.analytics_gold.WAC_PI_BF_ATTRS_UPD_v9 a
 )
 SELECT
     ndc_nmbr,
@@ -313,7 +313,7 @@ WHERE rn = 1
 ;
 
 
-select count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT_ACTUAL_WAC_MONTHLY_v7 
+select count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT_ACTUAL_WAC_MONTHLY_v9 
 --10325
 
 /* =====================================================================
@@ -323,7 +323,7 @@ select count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT
    - There are some materials associated with multiple cust_prod_category; But they have the same WAC in all records
    ===================================================================== */
 
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_ACTUAL_WAC_MONTHLY_v7 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_ACTUAL_WAC_MONTHLY_v9 AS
 WITH base AS (
     SELECT
         COPA.COPA_NDC_NUM         AS ndc_nmbr,
@@ -339,7 +339,7 @@ WITH base AS (
     FROM 
         uspd_analytics_den.analytics_gold.WAC_PI_FORECAST_BASELINE_PRICE_V2_FINAL_MODIFIED_0603 COPA
     JOIN
-        uspd_analytics_den.analytics_gold.WAC_PI_BT_UNIVERSE_v7 mat_univ
+        uspd_analytics_den.analytics_gold.WAC_PI_BT_UNIVERSE_v9 mat_univ
     ON
         COPA.COPA_MTRL_NUM = mat_univ.mtrl_num 
         and COPA.COPA_NDC_NUM = mat_univ.ndc_nmbr        
@@ -368,9 +368,9 @@ FROM collapsed
 ;
 
 
---select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_MTRL_HISTORY_PROFILE_v7 order by mtrl_num
+--select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_MTRL_HISTORY_PROFILE_v9 order by mtrl_num
 
-select count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT_MTRL_HISTORY_PROFILE_v7 
+select count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT_MTRL_HISTORY_PROFILE_v9 
 --10325
 
 /* =====================================================================
@@ -378,7 +378,7 @@ STEP 3B: MATERIAL LIFECYCLE
 - Use all observed monthly price records from Step-3
 - Defines earliest and latest observed price record for each material
 ===================================================================== */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_MTRL_HISTORY_PROFILE_v7 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_MTRL_HISTORY_PROFILE_v9 AS
 SELECT
     aw.ndc_nmbr,
     aw.mtrl_num,
@@ -388,12 +388,12 @@ SELECT
     MAX_BY(actual_wac, cal_month_start_dt) AS last_wac_price,
     COUNT(DISTINCT aw.cal_month_start_dt) AS months_with_price_records
 FROM 
-    uspd_analytics_den.analytics_gold.WAC_PI_BT_ACTUAL_WAC_MONTHLY_v7 aw
+    uspd_analytics_den.analytics_gold.WAC_PI_BT_ACTUAL_WAC_MONTHLY_v9 aw
 GROUP BY 1,2
 ;
 
 
-select count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT_ACTIVE_PRODUCTS_v7 
+select count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT_ACTIVE_PRODUCTS_v9 
 --10325
 
 /* =====================================================================
@@ -401,7 +401,7 @@ STEP 3C: CURRENT ACTIVE FLAG
 - Used only for diagnostics / coverage flag, not run eligibility
 - Replace with your actual business source if needed
 ===================================================================== */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_ACTIVE_PRODUCTS_v7 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_ACTIVE_PRODUCTS_v9 AS
 WITH Active_Products AS
 (
     SELECT 
@@ -433,7 +433,7 @@ SELECT DISTINCT
     CURR_FLG,
     ITM_CTVTY_CDE
 FROM
-    uspd_analytics_den.analytics_gold.WAC_PI_BT_UNIVERSE_v7 mat_univ
+    uspd_analytics_den.analytics_gold.WAC_PI_BT_UNIVERSE_v9 mat_univ
 LEFT JOIN
     Active_Products ap
     ON ap.mtrl_num = mat_univ.mtrl_num;
@@ -443,7 +443,7 @@ STEP 3C: CURRENT ACTIVE FLAG
 - Used only for diagnostics / coverage flag, not run eligibility
 - Replace with your actual business source if needed
 ===================================================================== */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_ACTIVE_PRODUCTS_v7 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_ACTIVE_PRODUCTS_v9 AS
 WITH Active_Products AS
 (
     SELECT 
@@ -475,19 +475,19 @@ SELECT DISTINCT
     CURR_FLG,
     ITM_CTVTY_CDE
 FROM
-    uspd_analytics_den.analytics_gold.WAC_PI_BT_UNIVERSE_v7 mat_univ
+    uspd_analytics_den.analytics_gold.WAC_PI_BT_UNIVERSE_v9 mat_univ
 LEFT JOIN
     Active_Products ap
     ON ap.mtrl_num = mat_univ.mtrl_num;
 
 
 /* =====================================================================
-MATERIAL LIFECYCLE TABLE (V7)
-- Uses ACTUAL_WAC_MONTHLY_v7 (clean monthly WAC)
+MATERIAL LIFECYCLE TABLE (v9)
+- Uses ACTUAL_WAC_MONTHLY_v9 (clean monthly WAC)
 - One row per material
 ===================================================================== */
 
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_MTRL_LIFECYCLE_v7 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_MTRL_LIFECYCLE_v9 AS
 
 WITH base AS (
     SELECT
@@ -495,7 +495,7 @@ WITH base AS (
         ndc_nmbr,
         cal_month_start_dt,
         actual_wac
-    FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_ACTUAL_WAC_MONTHLY_v7
+    FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_ACTUAL_WAC_MONTHLY_v9
 ),
 
 /*  Keep only valid WAC records */
@@ -581,14 +581,14 @@ ORDER BY
     a.mtrl_num;
 
 
-select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_RUN_ELIGIBILITY_v7 order by mtrl_num
+select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_RUN_ELIGIBILITY_v9 order by mtrl_num
 
 select run_id,is_eligible_for_run, count(distinct mtrl_num)
-from uspd_analytics_den.analytics_gold.WAC_PI_BT_RUN_ELIGIBILITY_v7 
+from uspd_analytics_den.analytics_gold.WAC_PI_BT_RUN_ELIGIBILITY_v9 
 group by 1,2
 
 select run_id,data_coverage_flag, is_eligible_for_run, count(distinct mtrl_num)
-from uspd_analytics_den.analytics_gold.WAC_PI_BT_RUN_ELIGIBILITY_v7 
+from uspd_analytics_den.analytics_gold.WAC_PI_BT_RUN_ELIGIBILITY_v9 
 group by 1,2,3
 
 /* =====================================================================
@@ -597,7 +597,7 @@ STEP 3D: RUN ELIGIBILITY
     eligible if first_price_dt exists and is before / on run history end
 - We keep coverage flags for diagnostics, not filtering
 ===================================================================== */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_RUN_ELIGIBILITY_v7 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_RUN_ELIGIBILITY_v9 AS
 WITH base AS (
     SELECT
         r.run_id,
@@ -616,13 +616,13 @@ WITH base AS (
         lc.months_with_price_records,
 
         COALESCE(ap.is_active_flag, 0) AS is_active_flag
-    FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_RUNS_v7 r
-    JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_UNIVERSE_v7 u
+    FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_RUNS_v9 r
+    JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_UNIVERSE_v9 u
       ON 1 = 1
-    LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_MTRL_LIFECYCLE_v7 lc
+    LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_MTRL_LIFECYCLE_v9 lc
       ON u.ndc_nmbr = lc.ndc_nmbr
      AND u.mtrl_num = lc.mtrl_num
-    LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_ACTIVE_PRODUCTS_v7 ap
+    LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_ACTIVE_PRODUCTS_v9 ap
       ON u.mtrl_num = ap.mtrl_num
 ),
 scored AS (
@@ -648,12 +648,12 @@ FROM scored
 -- WHERE is_eligible_for_run = 1
 ;
 
-select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_HIST_v7 order by run_id, mtrl_num, cal_month_start_dt
+select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_HIST_v9 order by run_id, mtrl_num, cal_month_start_dt
 
-select run_id, data_coverage_flag, count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT_HIST_v7
+select run_id, data_coverage_flag, count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT_HIST_v9
 group by 1,2
 
-select count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT_HIST_v7 
+select count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT_HIST_v9 
 --9065
 
 /* =====================================================================
@@ -661,7 +661,7 @@ STEP 4: HISTORICAL OBSERVED PRICE PANEL
 - Observed price records inside the run history window
 - Run eligibility is already defined in STEP 3D
 ===================================================================== */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_HIST_v7 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_HIST_v9 AS
 SELECT
     re.run_id,
     re.jump_off_month,
@@ -683,8 +683,8 @@ SELECT
     aw.actual_wac AS wac_price,
     aw.actual_sls_qty
     
-FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_RUN_ELIGIBILITY_v7 re
-JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_ACTUAL_WAC_MONTHLY_v7 aw
+FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_RUN_ELIGIBILITY_v9 re
+JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_ACTUAL_WAC_MONTHLY_v9 aw
   ON re.ndc_nmbr = aw.ndc_nmbr
  AND re.mtrl_num = aw.mtrl_num
  AND aw.cal_month_start_dt >= re.history_start_dt
@@ -697,30 +697,30 @@ WHERE
 /* ---------------------------------------------------------------------
    STEP 5: History age
    --------------------------------------------------------------------- */
--- CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_HIST_AGE_v7 AS
+-- CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_HIST_AGE_v9 AS
 -- SELECT
 --     run_id,
 --     mtrl_num,
 --     MIN(cal_month_start_dt) AS first_dt,
 --     MAX(cal_month_start_dt) AS last_dt,
 --     DATEDIFF('month', MIN(cal_month_start_dt), MAX(jump_off_month)) + 1 AS months_since_first_entry
--- FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_HIST_v7
+-- FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_HIST_v9
 -- GROUP BY run_id, mtrl_num
 -- ;
--- select count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT_HIST_AGE_v7 
+-- select count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT_HIST_AGE_v9 
 -- --5,786
 
 
-select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_HIST_AGE_v7
+select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_HIST_AGE_v9
 
-select count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT_HIST_AGE_v7
+select count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT_HIST_AGE_v9
 --5901
 
 /* =====================================================================
 STEP 5: HISTORY AGE
 - Tenure is based on first observed price date, not only rows in window
 ===================================================================== */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_HIST_AGE_v7 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_HIST_AGE_v9 AS
 SELECT
     re.run_id,
     re.mtrl_num,
@@ -730,8 +730,8 @@ SELECT
         WHEN re.first_price_dt IS NULL THEN 0
         ELSE TIMESTAMPDIFF(MONTH, re.first_price_dt, re.jump_off_month) + 1
     END AS months_since_first_entry
-FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_RUN_ELIGIBILITY_v7 re
-LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_HIST_v7 h
+FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_RUN_ELIGIBILITY_v9 re
+LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_HIST_v9 h
   ON re.run_id = h.run_id
  AND re.mtrl_num = h.mtrl_num
 WHERE
@@ -747,32 +747,32 @@ GROUP BY
 -- /* ---------------------------------------------------------------------
 --    STEP 6: Last observed WAC
 --    --------------------------------------------------------------------- */
--- CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_LAST_WAC_v7 AS
+-- CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_LAST_WAC_v9 AS
 -- SELECT
 --     run_id,
 --     mtrl_num,
 --     MAX(cal_month_start_dt) AS last_hist_month,
 --     MAX_BY(wac_price, cal_month_start_dt) AS last_wac_price
--- FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_HIST_v7
+-- FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_HIST_v9
 -- GROUP BY run_id, mtrl_num
 -- ;
 
-select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_LAST_WAC_v7 order by run_id, mtrl_num
+select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_LAST_WAC_v9 order by run_id, mtrl_num
 
-select count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT_LAST_WAC_v7
+select count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT_LAST_WAC_v9
 --9369
 
 /* =====================================================================
 STEP 6: LAST OBSERVED WAC
 ===================================================================== */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_LAST_WAC_v7 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_LAST_WAC_v9 AS
 SELECT
     re.run_id,
     re.mtrl_num,
     MAX(h.cal_month_start_dt) AS last_hist_month,
     MAX_BY(h.wac_price, h.cal_month_start_dt) AS last_wac_price
-FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_RUN_ELIGIBILITY_v7 re
-LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_HIST_v7 h
+FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_RUN_ELIGIBILITY_v9 re
+LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_HIST_v9 h
   ON re.run_id = h.run_id
  AND re.mtrl_num = h.mtrl_num
 WHERE
@@ -784,18 +784,18 @@ GROUP BY
 
 ----------------DONE---------
 
-select count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT_LAST_WAC_v7 
+select count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT_LAST_WAC_v9 
 --5,786
 
-select median(price_change_pct) from uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v7
+select median(price_change_pct) from uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v9
 where price_change_pct>0
 
-select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v7 order by mtrl_num
+select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v9 order by mtrl_num
 
 -- /* ---------------------------------------------------------------------
 --    STEP 7: Price changes
 --    --------------------------------------------------------------------- */
--- CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v7 AS
+-- CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v9 AS
 -- SELECT
 --     z.*,
 --     CASE WHEN z.prev_price IS NOT NULL AND z.wac_price > z.prev_price THEN 1 ELSE 0 END AS increase_flag,
@@ -809,31 +809,31 @@ select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v7 order
 --             PARTITION BY run_id, mtrl_num
 --             ORDER BY cal_month_start_dt
 --         ) AS prev_price
---     FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_HIST_v7 h
+--     FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_HIST_v9 h
 -- ) z
 -- ;
 
 
-select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v7 order by run_id, mtrl_num, cal_month_start_dt
+select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v9 order by run_id, mtrl_num, cal_month_start_dt
 
-select count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v7
+select count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v9
 --5786
 
 
-select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v7 order by run_id, mtrl_num, cal_month_start_dt
+select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v9 order by run_id, mtrl_num, cal_month_start_dt
 
-select count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v7
+select count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v9
 
-select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v7 where price_change_pct < 0 order by run_id, cal_month_start_dt desc, mtrl_num
+select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v9 where price_change_pct < 0 order by run_id, cal_month_start_dt desc, mtrl_num
 
-select count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v7 where price_change_pct < 0 order by run_id, cal_month_start_dt desc, mtrl_num
+select count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v9 where price_change_pct < 0 order by run_id, cal_month_start_dt desc, mtrl_num
 --308
 
-select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v7 where price_change_pct < 0 order by run_id desc , cal_month_start_dt desc, mtrl_num
+select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v9 where price_change_pct < 0 order by run_id desc , cal_month_start_dt desc, mtrl_num
 --308
 
 select run_id, cal_month_start_dt, count(*) 
-from uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v7 where price_change_pct < 0  
+from uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v9 where price_change_pct < 0  
 group by 1,2
 order by run_id desc , cal_month_start_dt desc, mtrl_num
 --308
@@ -845,7 +845,7 @@ STEP 7: PRICE CHANGES
 - EXTREME defined at >= 10%
 ===================================================================== */
 
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v7 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v9 AS
 SELECT
     z.*,
 
@@ -920,41 +920,41 @@ FROM (
             PARTITION BY h.run_id, h.mtrl_num
             ORDER BY h.cal_month_start_dt
         ) AS prev_price
-    FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_HIST_v7 h
+    FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_HIST_v9 h
 ) z
 ;
 
-select count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v7 
+select count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v9 
 --5,786
 
-select low_price_change_outlier_flag, high_price_change_outlier_flag, count(distinct mtrl_num) from  uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v7
+select low_price_change_outlier_flag, high_price_change_outlier_flag, count(distinct mtrl_num) from  uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v9
 group by 1,2
 
-select low_base_price_flag , count(distinct mtrl_num) from  uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v7
+select low_base_price_flag , count(distinct mtrl_num) from  uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v9
 group by 1
 
 -- /* ---------------------------------------------------------------------
 --    STEP 8: Valid increase events
 --    --------------------------------------------------------------------- */
--- CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_VALID_INCREASE_EVENTS_v7 AS
+-- CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_VALID_INCREASE_EVENTS_v9 AS
 -- SELECT *
--- FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v7
+-- FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v9
 -- WHERE increase_flag = 1
 --   AND price_change_pct IS NOT NULL
 --   AND price_change_pct >= 0.005
 --   AND price_change_pct < 5
 -- ;
 
-select count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT_VALID_INCREASE_EVENTS_v7 
+select count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT_VALID_INCREASE_EVENTS_v9 
 --3413
 ---------------DONE--------------------------
 /* =====================================================================
 STEP 8: VALID INCREASE EVENTS
 - Trusted signal layer
 ===================================================================== */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_VALID_INCREASE_EVENTS_v7 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_VALID_INCREASE_EVENTS_v9 AS
 SELECT *
-FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v7
+FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v9
 WHERE 
     event_type = 'VALID_INCREASE'
 -- increase_flag = 1
@@ -982,7 +982,7 @@ SELECT
     APPROX_PERCENTILE(price_change_pct, 0.95) AS p95,
     APPROX_PERCENTILE(price_change_pct, 0.99) AS p99
 
-FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_VALID_INCREASE_EVENTS_v7;
+FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_VALID_INCREASE_EVENTS_v9;
 
 --Before limiting extremes:
 -- 95% percentile: 0.1055853481	
@@ -993,15 +993,15 @@ FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_VALID_INCREASE_EVENTS_v7;
 -- 99th percentile: 0.0998109069
 
 
-select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_EVENT_PROFILE_v7 order by run_id, mtrl_num
+select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_EVENT_PROFILE_v9 order by run_id, mtrl_num
 
-select count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT_EVENT_PROFILE_v7 
+select count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT_EVENT_PROFILE_v9 
 --5901'
 /* =====================================================================
 STEP 8B: EVENT PROFILE
 - Preserve all eligible materials
 ===================================================================== */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_EVENT_PROFILE_v7 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_EVENT_PROFILE_v9 AS
 SELECT
     re.run_id,
     re.mtrl_num,
@@ -1014,8 +1014,8 @@ SELECT
     AVG(CASE WHEN pc.event_type = 'VALID_INCREASE' THEN pc.price_change_pct END) AS valid_avg_pct,
     AVG(CASE WHEN pc.event_type IN ('VALID_INCREASE','MICRO_CHANGE','EXTREME_SPIKE')
              THEN pc.price_change_pct END) AS raw_avg_pct
-FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_RUN_ELIGIBILITY_v7 re
-LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v7 pc
+FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_RUN_ELIGIBILITY_v9 re
+LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v9 pc
   ON re.run_id = pc.run_id
  AND re.mtrl_num = pc.mtrl_num
 where 
@@ -1027,29 +1027,29 @@ GROUP BY 1,2
 -- /* ---------------------------------------------------------------------
 --    STEP 9: Last increase date
 --    --------------------------------------------------------------------- */
--- CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_LAST_INCREASE_v7 AS
+-- CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_LAST_INCREASE_v9 AS
 -- SELECT
 --     run_id,
 --     mtrl_num,
 --     MAX(cal_month_start_dt) AS last_increase_dt
--- FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v7
+-- FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v9
 -- GROUP BY run_id, mtrl_num
 -- ;
 
-select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_LAST_INCREASE_v7 order by run_id, mtrl_num
+select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_LAST_INCREASE_v9 order by run_id, mtrl_num
 
-select count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT_LAST_INCREASE_v7
+select count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT_LAST_INCREASE_v9
 --3413
 /* =====================================================================
 STEP 9a: LAST VALID INCREASE DATE
 - Use valid events only
 ===================================================================== */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_LAST_INCREASE_v7 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_LAST_INCREASE_v9 AS
 SELECT
     run_id,
     mtrl_num,
     MAX(cal_month_start_dt) AS last_increase_dt
-FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_VALID_INCREASE_EVENTS_v7
+FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_VALID_INCREASE_EVENTS_v9
 GROUP BY 1,2
 ;
 
@@ -1059,13 +1059,13 @@ GROUP BY 1,2
 -- /* ---------------------------------------------------------------------
 --    STEP 10: NDC magnitude
 --    --------------------------------------------------------------------- */
--- CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_NDC_MAGNITUDE_v7 AS
+-- CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_NDC_MAGNITUDE_v9 AS
 -- WITH full_events AS (
 --     SELECT
 --         run_id,
 --         mtrl_num,
 --         COUNT(*) AS ndc_full_events
---     FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_VALID_INCREASE_EVENTS_v7
+--     FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_VALID_INCREASE_EVENTS_v9
 --     GROUP BY run_id, mtrl_num
 -- ),
 
@@ -1079,7 +1079,7 @@ GROUP BY 1,2
 --         CASE WHEN fi.cal_month_start_dt >= fi.roll_2yr_start
 --                AND fi.cal_month_start_dt < fi.roll_1yr_start THEN 1 ELSE 0 END AS flag_prev_1yr
 
---     FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_VALID_INCREASE_EVENTS_v7 fi
+--     FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_VALID_INCREASE_EVENTS_v9 fi
 --     WHERE fi.cal_month_start_dt >= fi.roll_2yr_start
 -- ),
 
@@ -1131,13 +1131,13 @@ STEP 10: MAGNITUDE - MODEL INPUT STATS - BASELINE SIGNAL
 - 60/40 weighting for recent behavior
 - Improved fallback logic
 ===================================================================== */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_NDC_MAGNITUDE_v7 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_NDC_MAGNITUDE_v9 AS
 
 WITH base_materials AS (
     SELECT DISTINCT
         run_id,
         mtrl_num
-    FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v7
+    FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v9
 ),
 
 valid_events AS (
@@ -1148,7 +1148,7 @@ valid_events AS (
         roll_1yr_start,
         roll_2yr_start,
         price_change_pct
-    FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v7
+    FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v9
     WHERE event_type = 'VALID_INCREASE'
 ),
 
@@ -1230,8 +1230,8 @@ loe_stats AS (
             END
         ) AS has_post_loe_increase
 
-    FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v7 pc
-    LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BF_ATTRS_UPD_v7 loe
+    FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v9 pc
+    LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BF_ATTRS_UPD_v9 loe
         ON pc.mtrl_num = loe.mtrl_num
     GROUP BY
         pc.run_id,
@@ -1287,7 +1287,7 @@ LEFT JOIN loe_stats ls
 
 
 
-select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_NDC_TIMING_v7 order by mtrl_num, run_id
+select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_NDC_TIMING_v9 order by mtrl_num, run_id
 
 /* ---------------------------------------------------------------------
    STEP 11: NDC timing (days between price changes)
@@ -1297,7 +1297,7 @@ select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_NDC_TIMING_v7 order by
    - Recency-weighted (60/40)
 --------------------------------------------------------------------- */
 
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_NDC_TIMING_v7 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_NDC_TIMING_v9 AS
 
 WITH gaps_all AS (
     SELECT
@@ -1307,7 +1307,7 @@ WITH gaps_all AS (
     roll_1yr_start,
     roll_2yr_start,
     TIMESTAMPDIFF(DAY, LAG(cal_month_start_dt) OVER (PARTITION BY run_id, mtrl_num ORDER BY cal_month_start_dt),cal_month_start_dt) AS days_since_prev
-    FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_VALID_INCREASE_EVENTS_v7
+    FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_VALID_INCREASE_EVENTS_v9
 ),
 
 /* =========================================================
@@ -1434,7 +1434,7 @@ FROM agg
 /* =====================================================================
 STEP 12.: THERAPEUTIC FALLBACK
 ===================================================================== */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_THERAP_FALLBACK_v7 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_THERAP_FALLBACK_v9 AS
 WITH material_level AS (
     SELECT
         re.run_id,
@@ -1442,14 +1442,14 @@ WITH material_level AS (
         re.mtrl_num,
         nm.predicted_price_change_pct,
         nt.ndc_exp_days_between_increases
-    FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_RUN_ELIGIBILITY_v7 re
-    JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_ATTRS_DEDUP_v7 ad
+    FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_RUN_ELIGIBILITY_v9 re
+    JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_ATTRS_DEDUP_v9 ad
       ON re.ndc_nmbr = ad.ndc_nmbr
      AND re.mtrl_num = ad.mtrl_num
-    LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_NDC_MAGNITUDE_v7 nm
+    LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_NDC_MAGNITUDE_v9 nm
       ON re.run_id = nm.run_id
      AND re.mtrl_num = nm.mtrl_num
-    LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_NDC_TIMING_v7 nt
+    LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_NDC_TIMING_v9 nt
       ON re.run_id = nt.run_id
      AND re.mtrl_num = nt.mtrl_num
     WHERE ad.therapeutic_class IS NOT NULL and is_eligible_for_run = 1
@@ -1470,7 +1470,7 @@ GROUP BY 1,2
 /* =====================================================================
 STEP 12b.: MANUFACTURER FALLBACK
 ===================================================================== */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_MFR_FALLBACK_v7 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_MFR_FALLBACK_v9 AS
 WITH material_level AS (
     SELECT
         re.run_id,
@@ -1478,14 +1478,14 @@ WITH material_level AS (
         re.mtrl_num,
         nm.predicted_price_change_pct,
         nt.ndc_exp_days_between_increases
-    FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_RUN_ELIGIBILITY_v7 re
-    JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_ATTRS_DEDUP_v7 ad
+    FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_RUN_ELIGIBILITY_v9 re
+    JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_ATTRS_DEDUP_v9 ad
       ON re.ndc_nmbr = ad.ndc_nmbr
      AND re.mtrl_num = ad.mtrl_num
-    LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_NDC_MAGNITUDE_v7 nm
+    LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_NDC_MAGNITUDE_v9 nm
       ON re.run_id = nm.run_id
      AND re.mtrl_num = nm.mtrl_num
-    LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_NDC_TIMING_v7 nt
+    LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_NDC_TIMING_v9 nt
       ON re.run_id = nt.run_id
      AND re.mtrl_num = nt.mtrl_num
     WHERE ad.manufacturer_name IS NOT NULL  and is_eligible_for_run = 1
@@ -1504,9 +1504,9 @@ GROUP BY 1,2
 
 
 
-select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_FALLBACK_ENRICHED_v7 order by run_id, mtrl_num
+select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_FALLBACK_ENRICHED_v9 order by run_id, mtrl_num
 
-select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_FALLBACK_ENRICHED_v7 where fallback_priority = 'NO THERAP/MFR AVAILABLE'
+select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_FALLBACK_ENRICHED_v9 where fallback_priority = 'NO THERAP/MFR AVAILABLE'
 
 /* =====================================================================
 STEP 12c: FALLBACK ENRICHED TABLE
@@ -1515,13 +1515,13 @@ STEP 12c: FALLBACK ENRICHED TABLE
 - Establishes priority: THERAP > MFR > NONE
 ===================================================================== */
 
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_FALLBACK_ENRICHED_v7 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_FALLBACK_ENRICHED_v9 AS
 WITH base_materials AS (
     SELECT DISTINCT
         run_id,
         mtrl_num,
         ndc_nmbr
-    FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_HIST_v7
+    FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_HIST_v9
 )
 
 SELECT 
@@ -1589,43 +1589,43 @@ FROM base_materials base
 /* ================================
 JOIN ATTRIBUTES
 =============================== */
-LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_ATTRS_DEDUP_v7 a
+LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_ATTRS_DEDUP_v9 a
   ON base.ndc_nmbr = a.ndc_nmbr
  AND base.mtrl_num = a.mtrl_num
 
 /* ================================
 JOIN THERAPEUTIC FALLBACK
 =============================== */
-LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_THERAP_FALLBACK_v7 tf
+LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_THERAP_FALLBACK_v9 tf
   ON base.run_id = tf.run_id
  AND a.therapeutic_class = tf.therapeutic_class
 
 /* ================================
 JOIN MANUFACTURER FALLBACK
 =============================== */
-LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_MFR_FALLBACK_v7 mf
+LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_MFR_FALLBACK_v9 mf
   ON base.run_id = mf.run_id
  AND a.manufacturer_name = mf.manufacturer_name
 ;
 
--- select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_BASELINE_RESOLVED_v7 order by run_id, mtrl_num, cal
+-- select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_BASELINE_RESOLVED_v9 order by run_id, mtrl_num, cal
 
--- select count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT_BASELINE_RESOLVED_v7
+-- select count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT_BASELINE_RESOLVED_v9
 -- --5786
 
 
-select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_BASELINE_RESOLVED_v7 where price_change_pct < 0 order by run_id, cal_month_start_dt desc, mtrl_num
+select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_BASELINE_RESOLVED_v9 where price_change_pct < 0 order by run_id, cal_month_start_dt desc, mtrl_num
 
 
 /* =====================================================================
 STEP 12d: BASELINE RESOLVED ASSUMPTIONS
 - Combines Step-10 magnitude + Step-11 timing
-- Uses FALLBACK_ENRICHED_v7 only for NEW products (<12 months)
+- Uses FALLBACK_ENRICHED_v9 only for NEW products (<12 months)
 - Applies overrides with LOE as highest priority
 - Adds stale timing override for non-new products
 ===================================================================== */
 
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_BASELINE_RESOLVED_v7 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_BASELINE_RESOLVED_v9 AS
 
 WITH base_materials AS (
     SELECT DISTINCT
@@ -1633,7 +1633,7 @@ WITH base_materials AS (
         mtrl_num,
         ndc_nmbr,
         jump_off_month
-    FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_HIST_v7
+    FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_HIST_v9
 ),
 
 /* =========================================================
@@ -1653,7 +1653,7 @@ latest_hist_flags AS (
                 PARTITION BY pc.run_id, pc.mtrl_num
                 ORDER BY pc.cal_month_start_dt DESC
             ) AS rn
-        FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v7 pc
+        FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v9 pc
     ) x
     WHERE x.rn = 1
 ),
@@ -1666,7 +1666,7 @@ last_valid_increase AS (
         run_id,
         mtrl_num,
         MAX(cal_month_start_dt) AS last_increase_dt
-    FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v7
+    FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_PRICE_CHANGES_v9
     WHERE event_type = 'VALID_INCREASE'
     GROUP BY
         run_id,
@@ -1683,7 +1683,7 @@ hist_age AS (
         MIN(cal_month_start_dt) AS first_dt,
         MAX(cal_month_start_dt) AS last_dt,
         TIMESTAMPDIFF(MONTH, MIN(cal_month_start_dt), MAX(jump_off_month)) + 1 AS months_since_first
-    FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_HIST_v7
+    FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_HIST_v9
     GROUP BY
         run_id,
         mtrl_num
@@ -1740,16 +1740,16 @@ joined AS (
     LEFT JOIN hist_age ha
         ON bm.run_id = ha.run_id
        AND bm.mtrl_num = ha.mtrl_num
-    LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_NDC_MAGNITUDE_v7 ms
+    LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_NDC_MAGNITUDE_v9 ms
         ON bm.run_id = ms.run_id
        AND bm.mtrl_num = ms.mtrl_num
-    LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_NDC_TIMING_v7 nt
+    LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_NDC_TIMING_v9 nt
         ON bm.run_id = nt.run_id
        AND bm.mtrl_num = nt.mtrl_num
-    LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_FALLBACK_ENRICHED_v7 fe
+    LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_FALLBACK_ENRICHED_v9 fe
         ON bm.run_id = fe.run_id
        AND bm.mtrl_num = fe.mtrl_num
-    LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_ATTRS_DEDUP_v7 attr
+    LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_ATTRS_DEDUP_v9 attr
       ON bm.ndc_nmbr = attr.ndc_nmbr
      AND bm.mtrl_num = attr.mtrl_num
 ),
@@ -1984,14 +1984,14 @@ FROM timing_resolved
 
 
 
-select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_FUTURE_ACTUAL_MONTHS_v7 order by run_id, mtrl_num, forecast_month
+select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_FUTURE_ACTUAL_MONTHS_v9 order by run_id, mtrl_num, forecast_month
 
 /* =====================================================================
 STEP 13 FUTURE MONTHS (FIXED)
 - Use FULL ACTUAL timeline (not HIST table)
 ===================================================================== */
 
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_FUTURE_ACTUAL_MONTHS_v7 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_FUTURE_ACTUAL_MONTHS_v9 AS
 
 SELECT DISTINCT
     r.run_id,
@@ -2000,16 +2000,16 @@ SELECT DISTINCT
     aw.mtrl_num,
     aw.cal_month_start_dt AS forecast_month
 
-FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_RUNS_v7 r
+FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_RUNS_v9 r
 
 /*  Use FULL observed timeline (this is the fix) */
-JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_ACTUAL_WAC_MONTHLY_v7 aw
+JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_ACTUAL_WAC_MONTHLY_v9 aw
     ON aw.cal_month_start_dt >= r.jump_off_month
 
 /*  restrict to modeled materials */
 JOIN (
     SELECT DISTINCT mtrl_num
-    FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_NDC_MAGNITUDE_v7
+    FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_NDC_MAGNITUDE_v9
 ) u
     ON aw.mtrl_num = u.mtrl_num
 ;
@@ -2021,28 +2021,28 @@ JOIN (
    - Use >= jump_off_month so jump-off month is included in evaluation
    ===================================================================== */
 
--- CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_FUTURE_ACTUAL_MONTHS_v7 AS
+-- CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_FUTURE_ACTUAL_MONTHS_v9 AS
 -- SELECT DISTINCT
 --     r.run_id,
 --     r.jump_off_month,
 --     aw.ndc_nmbr,
 --     aw.mtrl_num,
 --     aw.cal_month_start_dt AS forecast_month
--- FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_RUNS_v7 r
--- JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_ACTUAL_WAC_MONTHLY_v7 aw
+-- FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_RUNS_v9 r
+-- JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_ACTUAL_WAC_MONTHLY_v9 aw
 --   ON aw.cal_month_start_dt >= r.jump_off_month
--- JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_UNIVERSE_v7 u
+-- JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_UNIVERSE_v9 u
 --   ON aw.ndc_nmbr = u.ndc_nmbr
 --  AND aw.mtrl_num = u.mtrl_num
 -- ;
 
 
-select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_FORECASTED_v7  where mtrl_num = '000000000002013282' order by run_id, mtrl_num, forecast_month
+select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_FORECASTED_v9  where mtrl_num = '000000000002013282' order by run_id, mtrl_num, forecast_month
 
 
-select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_FORECASTED_v7 order by run_id, mtrl_num, forecast_month
+select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_FORECASTED_v9 order by run_id, mtrl_num, forecast_month
 
-select count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT_FORECASTED_v7
+select count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT_FORECASTED_v9
 --5786
 
 /* =====================================================================
@@ -2051,7 +2051,7 @@ STEP 14: FORECASTED WAC USING ORIGINAL COMPOUNDING LOGIC
 - Keeps stepwise increase logic from historical script
 ===================================================================== */
 
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_FORECASTED_v7 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_FORECASTED_v9 AS
 
 WITH base AS (
     SELECT
@@ -2072,8 +2072,8 @@ WITH base AS (
 
         fm.forecast_month
 
-    FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_BASELINE_RESOLVED_v7 br
-    LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_FUTURE_ACTUAL_MONTHS_v7 fm
+    FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_BASELINE_RESOLVED_v9 br
+    LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_FUTURE_ACTUAL_MONTHS_v9 fm
         ON br.run_id = fm.run_id
        AND br.mtrl_num = fm.mtrl_num
 ),
@@ -2142,7 +2142,7 @@ SELECT
     run_id,
     forecast_source,
     COUNT(DISTINCT mtrl_num) AS material_cnt
-FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_BASELINE_RESOLVED_v7
+FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_BASELINE_RESOLVED_v9
 GROUP BY
     run_id,
     forecast_source
@@ -2166,7 +2166,7 @@ SELECT
         THEN mtrl_num
     END) AS materials_with_loe
 
-FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_BASELINE_RESOLVED_v7
+FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_BASELINE_RESOLVED_v9
 GROUP BY
     run_id
 ORDER BY
@@ -2178,7 +2178,7 @@ SELECT
     run_id,
     timing_source,
     COUNT(DISTINCT mtrl_num) AS material_cnt
-FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_BASELINE_RESOLVED_v7
+FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_BASELINE_RESOLVED_v9
 GROUP BY
     run_id,
     timing_source
@@ -2198,7 +2198,7 @@ SELECT
 
     COUNT(*) AS total_rows
 
-FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_BASELINE_RESOLVED_v7
+FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_BASELINE_RESOLVED_v9
 WHERE expected_days_between_increases IS NOT NULL
 GROUP BY
     run_id;
@@ -2208,7 +2208,7 @@ SELECT
     run_id,
     n_expected_increases,
     COUNT(*) AS row_cnt
-FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_FORECASTED_v7
+FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_FORECASTED_v9
 GROUP BY
     run_id,
     n_expected_increases
@@ -2226,7 +2226,7 @@ SELECT
 
     COUNT(DISTINCT mtrl_num) AS materials
 
-FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_FORECASTED_v7
+FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_FORECASTED_v9
 GROUP BY
     run_id;
 
@@ -2244,7 +2244,7 @@ SELECT
 
     forecasted_wac / NULLIF(last_wac_price, 0) AS growth_factor
 
-FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_FORECASTED_v7
+FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_FORECASTED_v9
 WHERE forecasted_wac IS NOT NULL
   AND forecasted_wac > 1.5 * last_wac_price   -- threshold
 ORDER BY
@@ -2261,7 +2261,7 @@ SELECT
     APPROX_PERCENTILE(forecasted_wac / NULLIF(last_wac_price, 0), 0.95) AS p95_growth,
     MAX(forecasted_wac / NULLIF(last_wac_price, 0)) AS max_growth
 
-FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_FORECASTED_v7
+FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_FORECASTED_v9
 GROUP BY
     run_id;
 
@@ -2279,18 +2279,18 @@ SELECT
         WHEN n_expected_increases = 0 THEN mtrl_num
     END)) / COUNT(DISTINCT mtrl_num) AS ratio
 
-FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_FORECASTED_v7
+FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_FORECASTED_v9
 GROUP BY
     run_id;
 
 
 select pass_flag_vs_actual_error_threshold, count(*) 
 from
-uspd_analytics_den.analytics_gold.WAC_PI_BT_EVAL_DETAIL_v7 
+uspd_analytics_den.analytics_gold.WAC_PI_BT_EVAL_DETAIL_v9 
 group by 
 1
 
-select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_EVAL_DETAIL_v7 order by run_id, mtrl_num, forecast_month
+select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_EVAL_DETAIL_v9 order by run_id, mtrl_num, forecast_month
 -----DONE-----
 
 /* =====================================================================
@@ -2300,7 +2300,7 @@ STEP 15: FORECAST EVALUATION DETAIL TABLE (POWER BI READY)
 - Designed to align with BRD evaluation/detail-table requirements
 ===================================================================== */
 
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_EVAL_DETAIL_v7 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_EVAL_DETAIL_v9 AS
 
 WITH forecast_base AS (
     SELECT
@@ -2328,7 +2328,7 @@ WITH forecast_base AS (
         f.days_since_ref,
         f.n_expected_increases,
         f.forecasted_wac
-    FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_FORECASTED_v7 f
+    FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_FORECASTED_v9 f
 ),
 
 attrs AS (
@@ -2337,7 +2337,7 @@ attrs AS (
         mtrl_num,
         therapeutic_class,
         manufacturer_name
-    FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_ATTRS_DEDUP_v7
+    FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_ATTRS_DEDUP_v9
 ),
 
 joined AS (
@@ -2372,7 +2372,7 @@ joined AS (
 
     FROM forecast_base fb
 
-    LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_BASELINE_RESOLVED_v7 br
+    LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_BASELINE_RESOLVED_v9 br
       ON fb.run_id = br.run_id
      AND fb.mtrl_num = br.mtrl_num
 
@@ -2380,7 +2380,7 @@ joined AS (
       ON fb.ndc_nmbr = a.ndc_nmbr
      AND fb.mtrl_num = a.mtrl_num
 
-    LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_ACTUAL_WAC_MONTHLY_v7 aw
+    LEFT JOIN uspd_analytics_den.analytics_gold.WAC_PI_BT_ACTUAL_WAC_MONTHLY_v9 aw
       ON fb.mtrl_num = aw.mtrl_num
      AND fb.forecast_month = aw.cal_month_start_dt
 ),
@@ -2731,25 +2731,25 @@ where forecast_month is not null
 ;
 
 
-select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_EVAL_DETAIL_v7
+select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_EVAL_DETAIL_v9
 
-select count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT_EVAL_DETAIL_v7
+select count(distinct mtrl_num) from uspd_analytics_den.analytics_gold.WAC_PI_BT_EVAL_DETAIL_v9
 
-select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_EVAL_DETAIL_v7 where forecast_new is null
+select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_EVAL_DETAIL_v9 where forecast_new is null
 
 
 
-select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_EVAL_SUMMARY_RUN_v7 
+select * from uspd_analytics_den.analytics_gold.WAC_PI_BT_EVAL_SUMMARY_RUN_v9 
 
 select run_id, row_cnt,material_cnt, wac_wape_new, dollar_wape_new, mape_new_wac, mape_new_dollars
 from
-uspd_analytics_den.analytics_gold.WAC_PI_BT_EVAL_SUMMARY_RUN_v7 
+uspd_analytics_den.analytics_gold.WAC_PI_BT_EVAL_SUMMARY_RUN_v9 
 
 -----------------Praveen will update these tables----------------
 ---------------------------------------------------------------------------------------
--- FINAL TABLE: EVAL v8 WITH DECREASE FLAGS (FULL BUILD)
+-- FINAL TABLE: EVAL v9 WITH DECREASE FLAGS (FULL BUILD)
 ----------------------------------------------------------------------------------------
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_EVAL_v8_WITH_DECREASE_FLAG AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_BT_EVAL_v9_WITH_DECREASE_FLAG AS
 
 /* =========================================================
 STEP 1: BASE ACTUALS (clean monthly WAC)
@@ -2761,7 +2761,7 @@ WITH base_actuals AS (
         mtrl_num,
         cal_month_start_dt,
         actual_wac
-    FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_ACTUAL_WAC_MONTHLY_v7
+    FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_ACTUAL_WAC_MONTHLY_v9
 ),
 
 /* =========================================================
@@ -2842,12 +2842,12 @@ decrease_flags AS (
 ),
 
 /* =========================================================
-STEP 4: BASE FORECAST/EVAL TABLE (v7)
+STEP 4: BASE FORECAST/EVAL TABLE (v9)
 ========================================================= */
 
 eval_base AS (
     SELECT *
-    FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_EVAL_DETAIL_v7
+    FROM uspd_analytics_den.analytics_gold.WAC_PI_BT_EVAL_DETAIL_v9
 ),
 
 /* =========================================================
