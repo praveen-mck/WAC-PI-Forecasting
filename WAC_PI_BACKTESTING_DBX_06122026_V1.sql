@@ -15,6 +15,245 @@
    ===================================================================== */
 
 
+--Data Engineering Step
+--Using ITM_PRC_HIST as an input for WAC
+------------------------------------------------------------------------------------------------------------------
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.WAC_PI_FORECAST_BASELINE_PRICE_V2_FINAL_MODIFIED_0622  AS
+WITH COPA AS (
+    SELECT 
+    FISCAL_YR_PERIOD,
+    POST_DT,
+    MTRL_NUM,
+    NDC_NMBR,
+    CUST_PROD_CATEGORY,
+    ROUND(SUM(SLS_QTY_BEX),2) as TOTAL_SLS_QTY_BEX,
+    ROUND((SUM(WAC)/SUM(SLS_QTY_BEX)),2) AS WAC_PRICE
+FROM 
+    (SELECT DISTINCT
+        t_copa.*,
+        MTRL.NDC_NMBR,
+        CASE
+            WHEN t_copa.cmpny_cd = '8545' THEN
+              CASE
+                WHEN t_copa.PROD_HIER_1_NUM IN ('85451') THEN 'MPB Plasma'
+          ELSE 'MPB Specialty'
+              END
+            WHEN t_copa.PROD_HIER_1_NUM IN ('00030','00050')
+                 AND t_copa.sls_ctgry_cd NOT IN ('200','250','300','400','410','500','510') THEN 'OTC'
+            WHEN t_copa.PROD_HIER_1_NUM = '00020' AND t_copa.cmpny_cd <> '8545' THEN
+            'GX'
+            WHEN t_copa.SLS_CTGRY_CD IN ('102','103','106','107','112','116','122','123','701','703','711','806','807','816') THEN 'DROP SHIP'
+            WHEN t_copa.MTRL_GRP2_CD = 'W2' THEN 'GLP-1'
+            WHEN t_copa.MTRL_GRP2_CD IN ('R1', 'R2') THEN 'BIOSIMS'
+            WHEN t_copa.MTRL_GRP2_CD IN ('V1', 'V2') THEN 'VAX'
+            WHEN t_copa.MTRL_GRP2_CD IN ('S1','S3','S4','S5','S6') THEN 'APOLLO'
+            ELSE 'BX'
+          END AS CUST_PROD_CATEGORY
+          
+        
+        FROM fdp_prod.psas_fdp_usp_gold.vw_pharma_profitability_actuals_fpa  t_copa
+        --
+        LEFT JOIN (SELECT * FROM fdp_prod.psas_fdp_all_gold.vw_q_material_pharma_bw
+                    WHERE CURR_FLG = 'Y') MTRL
+        ON t_copa.MTRL_NUM = mtrl.MATERIAL
+        --
+        LEFT JOIN (SELECT * FROM fdp_prod.psas_fdp_all_gold.vw_t_manufacturer_pharma_bw
+                    WHERE CURR_FLG = 'Y')MFR
+        ON mtrl.VENDOR = mfr.VENDOR_ID
+        --
+        WHERE ((WAC is not null AND WAC > 0 ) AND (SLS_QTY_BEX IS NOT NULL AND SLS_QTY_BEX > 0))
+    )CC
+WHERE CUST_PROD_CATEGORY NOT IN ('GX', 'OTC')
+GROUP BY 1,2,3,4,5
+),
+
+ITM_PRC_HIST AS (
+    SELECT * FROM 
+    (SELECT  DISTINCT
+        ITM.NDC_NUM,
+        (TRIM('00000000000')||TRIM(price_hist.EM_ITEM_NUM)) AS EM_ITEM_NUM,
+        price_hist.FRST_EFF_DT,
+        price_hist.LAST_EFF_DT,
+        price_hist.PRC_EFF_DT,
+        price_hist.ITEM_COST,
+        price_hist.SELL_PRC,
+        ITM.SELL_DSCR,
+        YEAR(price_hist.prc_eff_dt) AS price_year, 
+        CASE
+            WHEN vitm.COPA_DEPT_CD IN ('P1', 'P3') THEN 'MPB PLASMA'
+            WHEN (vitm.COPA_DEPT_CD IN ('P2', 'P4') OR vitm.SELL_DSCR LIKE '%MPB%') THEN 'MPB SX'
+            WHEN vitm.COPA_DEPT_CD = 'S2' OR itm.DRPSHP_IND = 'Y' THEN 'DROP SHIP'
+            WHEN itm.RXDA_CD = 'N' THEN 'OTC'
+            WHEN itm.GNRC_IND = 'Y' THEN 'GX'
+            WHEN vitm.COPA_DEPT_CD LIKE 'W%' THEN 'GLP_1'
+            WHEN vitm.COPA_DEPT_CD IN ('R1','R2') THEN 'BIOSIM'
+            WHEN vitm.COPA_DEPT_CD IN ('S1', 'S3', 'S4', 'S5', 'S6') THEN 'APOLLO SX'
+            WHEN vitm.COPA_DEPT_CD IN ('V1', 'V2') THEN 'VAX'
+            ELSE 'BX'
+        END AS PRICING_CATEGORY
+    FROM 
+        uspd_dealpricing_snowflake.rpt.t_item_prc_hist price_hist
+    LEFT JOIN 
+        uspd_dealpricing_snowflake.rpt.t_iw_em_item itm 
+    ON 
+        price_hist.em_item_num = itm.EM_ITEM_NUM
+    LEFT JOIN 
+        uspd_dealpricing_snowflake.rpt.t_dm_vstx_item vitm 
+    ON 
+        itm.EM_ITEM_NUM = vitm.EM_ITEM_NUM 
+    WHERE
+        LENGTH(NDC_NUM) > 0
+        AND itm.SELL_DSCR NOT IN ('DO NOT USE', 'TBA DO NOT DELETE OR RELEASE')
+        AND NDC_NUM NOT IN (
+        '00000000000','00000000001','00000000002','00000000003',
+        '00000000004','00000000005','00000000009','00000000010',
+        '00000000069','00000000091')
+    ) t1
+WHERE
+    PRICING_CATEGORY not in ('GX','OTC')
+),
+--
+UNIFIED AS 
+   (SELECT 
+    COPA.FISCAL_YR_PERIOD AS COPA_FISCAL_YEAR_PERIOD,
+    DATE_TRUNC('month', COPA.POST_DT) as WAC_PRICE_COPA_DATE,
+    COPA.MTRL_NUM AS COPA_MTRL_NUM, 
+    COPA.NDC_NMBR AS COPA_NDC_NUM, 
+    CAST(ROUND(COPA.WAC_PRICE, 2) AS DECIMAL(18,4)) AS COPA_WAC_PRICE,
+    LAG(CAST(FLOOR(COPA.WAC_PRICE, 2) AS DECIMAL(18,4))) OVER (PARTITION BY COPA.MTRL_NUM, COPA.NDC_NMBR, COPA.CUST_PROD_CATEGORY ORDER BY DATE_TRUNC('month', COPA.POST_DT)) AS PREV_PERIOD_COPA_WAC_PRICE,
+    COPA.CUST_PROD_CATEGORY,
+    SNW.NDC_NUM AS SNW_NDC_NUM,
+    SNW.EM_ITEM_NUM AS SNW_MTRL_NUM,
+    SNW.PRICING_CATEGORY AS SNW_PRICING_CATEGORY,
+    SNW.FRST_EFF_DT AS SNW_FIRST_EFF_DATE,
+    SNW.LAST_EFF_DT AS SNW_LAST_EFF_DATE,
+    SNW.PRC_EFF_DT AS SNW_PRC_EFF_DT,
+    SNW.ITEM_COST AS SNW_WAC_PRICE,
+    LAG(SNW.ITEM_COST) OVER (PARTITION BY SNW.NDC_NUM, SNW.EM_ITEM_NUM, SNW.PRICING_CATEGORY ORDER BY DATE_TRUNC('month', COPA.POST_DT)) AS PREV_PERIOD_SNW_WAC_PRICE,
+    CASE WHEN (CAST(FLOOR(COPA.WAC_PRICE, 2) AS DECIMAL(18,4)) = SNW.ITEM_COST OR (CAST(FLOOR(COPA.WAC_PRICE, 2) AS DECIMAL(18,4)) - SNW.ITEM_COST) < 1)
+        THEN 'Y' ELSE 'N' END as COPA_SNW_WAC_PRICE_MATCH_IND,
+    TOTAL_SLS_QTY_BEX AS TOTAL_SLS_QTY_BEX
+FROM 
+(SELECT 
+    FISCAL_YR_PERIOD,
+    POST_DT,
+    MTRL_NUM,
+    NDC_NMBR,
+    CUST_PROD_CATEGORY,
+    WAC_PRICE,
+    SUM(TOTAL_SLS_QTY_BEX) OVER (PARTITION BY MTRL_NUM, NDC_NMBR, CUST_PROD_CATEGORY, DATE_TRUNC('month', POST_DT) ORDER BY POST_DT DESC) AS TOTAL_SLS_QTY_BEX
+FROM COPA
+QUALIFY ROW_NUMBER() OVER (PARTITION BY MTRL_NUM, NDC_NMBR, CUST_PROD_CATEGORY, DATE_TRUNC('month', POST_DT) ORDER BY POST_DT ASC) = 1
+) COPA
+--
+LEFT JOIN ITM_PRC_HIST SNW
+ON COPA.NDC_NMBR = SNW.NDC_NUM
+AND COPA.MTRL_NUM = SNW.EM_ITEM_NUM
+AND COPA.POST_DT BETWEEN SNW.FRST_EFF_DT AND SNW.LAST_EFF_DT
+),
+
+VARIANCE_CALC AS (
+    SELECT
+        *,
+        CASE
+            WHEN PREV_PERIOD_COPA_WAC_PRICE IS NULL 
+              OR PREV_PERIOD_COPA_WAC_PRICE = 0 THEN 0
+            ELSE ABS((COPA_WAC_PRICE - PREV_PERIOD_COPA_WAC_PRICE) 
+                     / PREV_PERIOD_COPA_WAC_PRICE)
+        END AS COPA_MOM_VAR_PCT,
+        CASE
+            WHEN PREV_PERIOD_SNW_WAC_PRICE IS NULL 
+              OR PREV_PERIOD_SNW_WAC_PRICE = 0 THEN 0
+            ELSE ABS((SNW_WAC_PRICE - PREV_PERIOD_SNW_WAC_PRICE) 
+                     / PREV_PERIOD_SNW_WAC_PRICE)
+        END AS SNW_MOM_VAR_PCT,
+        CASE
+            WHEN WAC_PRICE_COPA_DATE > CURRENT_DATE() 
+             AND SNW_LAST_EFF_DATE >= '2999-01-01'
+            THEN 1 ELSE 0
+        END AS IS_FUTURE_PERIOD_FLAG
+
+    FROM UNIFIED
+),
+
+SOURCE_STABILITY AS (
+    SELECT
+        COPA_MTRL_NUM,
+        COPA_NDC_NUM,
+        AVG(COPA_MOM_VAR_PCT) AS AVG_COPA_VARIANCE,
+        AVG(SNW_MOM_VAR_PCT) AS AVG_SNW_VARIANCE,
+        SUM(CASE WHEN SNW_WAC_PRICE IS NULL THEN 1 ELSE 0 END) AS SNW_NULL_MONTHS,
+        COUNT(*) AS TOTAL_MONTHS,
+        CASE
+            WHEN SUM(CASE WHEN SNW_WAC_PRICE IS NULL THEN 1 ELSE 0 END) 
+                 > COUNT(*) * 0.2
+                THEN 'COPA'
+            WHEN AVG(SNW_MOM_VAR_PCT) < AVG(COPA_MOM_VAR_PCT)
+                THEN 'SNW'
+            ELSE 'COPA'
+        END AS PREFERRED_SOURCE
+
+    FROM VARIANCE_CALC
+    WHERE IS_FUTURE_PERIOD_FLAG = 0
+    GROUP BY COPA_MTRL_NUM, COPA_NDC_NUM
+),
+
+FINAL AS (
+    SELECT
+        v.*,
+        s.AVG_COPA_VARIANCE,
+        s.AVG_SNW_VARIANCE,
+        s.PREFERRED_SOURCE,
+
+        CASE
+            WHEN v.IS_FUTURE_PERIOD_FLAG = 1
+                THEN 'COPA'                          
+            ELSE s.PREFERRED_SOURCE
+        END AS EFFECTIVE_SOURCE,
+        CASE
+            WHEN v.IS_FUTURE_PERIOD_FLAG = 1
+                THEN v.COPA_WAC_PRICE                
+            WHEN s.PREFERRED_SOURCE = 'SNW' AND v.SNW_WAC_PRICE IS NOT NULL
+                THEN v.SNW_WAC_PRICE
+            WHEN s.PREFERRED_SOURCE = 'SNW' AND v.SNW_WAC_PRICE IS NULL
+                THEN v.COPA_WAC_PRICE                
+            ELSE v.COPA_WAC_PRICE
+        END AS BASELINE_WAC_PRICE,
+
+        CASE
+            WHEN v.IS_FUTURE_PERIOD_FLAG = 1
+                THEN v.PREV_PERIOD_COPA_WAC_PRICE
+            WHEN s.PREFERRED_SOURCE = 'SNW' AND v.PREV_PERIOD_SNW_WAC_PRICE IS NOT NULL
+                THEN v.PREV_PERIOD_SNW_WAC_PRICE
+            WHEN s.PREFERRED_SOURCE = 'SNW' AND v.PREV_PERIOD_SNW_WAC_PRICE IS NULL
+                THEN v.PREV_PERIOD_COPA_WAC_PRICE
+            ELSE v.PREV_PERIOD_COPA_WAC_PRICE
+        END AS PREV_PERIOD_BASELINE_WAC_PRICE
+
+    FROM VARIANCE_CALC v
+    JOIN SOURCE_STABILITY s
+        ON v.COPA_MTRL_NUM = s.COPA_MTRL_NUM
+        AND v.COPA_NDC_NUM  = s.COPA_NDC_NUM
+)
+
+SELECT
+    *,
+    CASE
+        WHEN PREV_PERIOD_BASELINE_WAC_PRICE IS NULL 
+          OR PREV_PERIOD_BASELINE_WAC_PRICE = 0 THEN NULL
+        ELSE ROUND(
+            ABS((BASELINE_WAC_PRICE - PREV_PERIOD_BASELINE_WAC_PRICE) 
+                / PREV_PERIOD_BASELINE_WAC_PRICE), 4)
+    END AS BASELINE_MOM_VAR_PCT
+FROM FINAL
+ORDER BY
+    COPA_MTRL_NUM,
+    COPA_NDC_NUM,
+    WAC_PRICE_COPA_DATE
+;
+
+
+
 /* ---------------------------------------------------------------------
    STEP 0: Backtest runs
    --------------------------------------------------------------------- */
