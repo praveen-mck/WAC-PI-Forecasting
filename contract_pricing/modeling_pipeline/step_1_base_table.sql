@@ -1,12 +1,14 @@
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_modeling_base_v2 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_modeling_base_v6 AS
 WITH src AS (
     SELECT *
-    FROM uspd_analytics_den.analytics_gold.vw_q_contract_price_base
+    FROM uspd_analytics_den.analytics_gold.vw_q_contract_price_base_v6
     WHERE YEAR_MONTH IS NOT NULL
       AND MTRL_NUM IS NOT NULL
       AND TRIM(MTRL_NUM) <> ''
       AND TOTAL_SLS_QTY IS NOT NULL
       AND TOTAL_SLS_QTY >= 0
+      AND TOTAL_ZOMBIE_SALES <1 
+      AND WAC_SPREAD_FLAG = 'VALID'
 ),
 
 normalized AS (
@@ -16,13 +18,10 @@ normalized AS (
 
         CUST_SEGMENT,
         ACCT_CLASSIFICATION,
+        account_class_cd,
         CUST_PROD_CATEGORY,
-
         NATIONAL_GRP_ID,
         NATIONAL_GRP_DESC,
-        SUBSET_L2_ID,
-        SUBSET_L2_DESC,
-
         MTRL_NUM,
         MTRL_NME_NVGTON,
 
@@ -73,19 +72,21 @@ normalized AS (
 
         /* keep customer key explicit */
         CONCAT_WS('|',
+            MANUFACTURER_ID,
+            NATIONAL_GRP_ID,
             CUST_SEGMENT,
             ACCT_CLASSIFICATION,
-            CUST_PROD_CATEGORY,
-            NATIONAL_GRP_ID,
-            SUBSET_L2_ID
+            CUST_PROD_CATEGORY
         ) AS customer_group_key_id,
 
         CONCAT_WS('|',
+            MANUFACTURER_NAME,
+            NATIONAL_GRP_DESC,
             CUST_SEGMENT,
             ACCT_CLASSIFICATION,
-            CUST_PROD_CATEGORY,
-            NATIONAL_GRP_DESC,
-            SUBSET_L2_DESC
+            CUST_PROD_CATEGORY
+            
+            
         ) AS customer_group_key_desc
 
     FROM src
@@ -98,12 +99,11 @@ agg AS (
 
         CUST_SEGMENT,
         ACCT_CLASSIFICATION,
+        account_class_cd,
         CUST_PROD_CATEGORY,
 
         NATIONAL_GRP_ID,
         NATIONAL_GRP_DESC,
-        SUBSET_L2_ID,
-        SUBSET_L2_DESC,
 
         customer_group_key_id,
         customer_group_key_desc,
@@ -142,11 +142,10 @@ agg AS (
         YEAR_MONTH,
         CUST_SEGMENT,
         ACCT_CLASSIFICATION,
+        account_class_cd,
         CUST_PROD_CATEGORY,
         NATIONAL_GRP_ID,
         NATIONAL_GRP_DESC,
-        SUBSET_L2_ID,
-        SUBSET_L2_DESC,
         customer_group_key_id,
         customer_group_key_desc,
         MTRL_NUM
@@ -171,7 +170,133 @@ flagged AS (
         END AS exclude_from_training_flag
 
     FROM agg a
+),
+
+series_stats AS (
+    SELECT
+        f.*,
+
+        customer_group_key_id AS groupby_key,
+
+        MEDIAN(
+            CASE
+                WHEN exclude_from_training_flag = 0
+                THEN contract_price
+            END
+        ) OVER (
+            PARTITION BY customer_group_key_id, MTRL_NUM
+        ) AS median_contract_price,
+
+        STDDEV_SAMP(
+            CASE
+                WHEN exclude_from_training_flag = 0
+                THEN contract_price
+            END
+        ) OVER (
+            PARTITION BY customer_group_key_id, MTRL_NUM
+        ) AS stddev_contract_price,
+
+        COUNT(
+            CASE
+                WHEN exclude_from_training_flag = 0
+                THEN 1
+            END
+        ) OVER (
+            PARTITION BY customer_group_key_id, MTRL_NUM
+        ) AS valid_time_series_points
+
+    FROM flagged f
+),
+
+outlier_flagged AS (
+    SELECT
+        s.*,
+
+        CASE
+            WHEN exclude_from_training_flag = 1 THEN 0
+            WHEN valid_time_series_points < 3 THEN 0
+            WHEN stddev_contract_price IS NULL THEN 0
+            WHEN stddev_contract_price = 0 THEN 0
+            WHEN ABS(contract_price - median_contract_price)
+                 > 4 * stddev_contract_price
+                THEN 1
+            ELSE 0
+        END AS contract_price_outlier_flag,
+
+        CASE
+            WHEN exclude_from_training_flag = 0
+             AND (
+                    valid_time_series_points < 6
+                 OR stddev_contract_price IS NULL
+                 OR stddev_contract_price = 0
+                 OR ABS(contract_price - median_contract_price)
+                    <= 3 * stddev_contract_price
+                 )
+                THEN 1
+            ELSE 0
+        END AS include_in_avg_contract_price_flag
+
+    FROM series_stats s
+),
+
+avg_contract_price_by_series AS (
+    SELECT
+        groupby_key,
+        MTRL_NUM,
+
+        AVG(
+            CASE
+                WHEN include_in_avg_contract_price_flag = 1
+                THEN contract_price
+            END
+        ) AS avg_contract_price_excl_outliers,
+
+        SUM(
+            CASE
+                WHEN include_in_avg_contract_price_flag = 1
+                THEN TOTAL_NET_COS
+            END
+        )
+        /
+        NULLIF(
+            SUM(
+                CASE
+                    WHEN include_in_avg_contract_price_flag = 1
+                    THEN TOTAL_SLS_QTY
+                END
+            ),
+            0
+        ) AS qty_weighted_avg_contract_price_excl_outliers,
+
+        COUNT(
+            CASE
+                WHEN include_in_avg_contract_price_flag = 1
+                THEN 1
+            END
+        ) AS months_used_in_avg_contract_price,
+
+        COUNT(
+            CASE
+                WHEN contract_price_outlier_flag = 1
+                THEN 1
+            END
+        ) AS months_excluded_as_contract_price_outliers
+
+    FROM outlier_flagged
+    GROUP BY
+        groupby_key,
+        MTRL_NUM
 )
 
-SELECT *
-FROM flagged;
+SELECT
+    o.*,
+
+    a.avg_contract_price_excl_outliers,
+    a.qty_weighted_avg_contract_price_excl_outliers,
+    a.months_used_in_avg_contract_price,
+    a.months_excluded_as_contract_price_outliers
+
+FROM outlier_flagged o
+LEFT JOIN avg_contract_price_by_series a
+       ON o.groupby_key = a.groupby_key
+      AND o.MTRL_NUM = a.MTRL_NUM;

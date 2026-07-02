@@ -3,7 +3,7 @@
 -- - Last resort fallback
 -- =========================================================
 
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_fallback_segment_category_v2 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_fallback_segment_category_v5 AS
 WITH monthly_seg_cat AS (
     SELECT
         cust_segment,
@@ -22,7 +22,7 @@ WITH monthly_seg_cat AS (
             SUM(total_net_cos) / NULLIF(SUM(wac_weighted * total_sls_qty), 0)
         ) - 1 AS wac_spread
 
-    FROM uspd_analytics_den.analytics_gold.contract_price_training_clean_v2
+    FROM uspd_analytics_den.analytics_gold.contract_price_training_clean_v5
     WHERE include_for_modeling_flag = 1
     GROUP BY
         cust_segment,

@@ -9,7 +9,7 @@ WITH base AS (
         customer_group_key_id,
         mtrl_num,
         anchor_month
-    FROM uspd_analytics_den.analytics_gold.contract_price_resolved_assumptions_v5
+    FROM uspd_analytics_den.analytics_gold.contract_price_resolved_assumptions_v4
 ),
 
 expanded AS (

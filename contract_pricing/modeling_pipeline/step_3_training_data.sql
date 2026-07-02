@@ -6,7 +6,7 @@
 -- - Keeps rows, but marks include_for_modeling_flag
 -- =========================================================
 
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_training_clean_v2 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_training_clean_v5 AS
 WITH ordered AS (
     SELECT
         b.*,
@@ -21,7 +21,7 @@ WITH ordered AS (
             ORDER BY b.cal_month_start_dt
         ) AS prev_wac_spread
 
-    FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v2 b
+    FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v5 b
 ),
 
 calc AS (

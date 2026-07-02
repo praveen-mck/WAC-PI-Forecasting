@@ -1,5 +1,5 @@
 /* =====================================================================
-   CONTRACT PRICE BACKTEST PIPELINE (V1)
+   CONTRACT PRICE BACKTEST PIPELINE (v5)
    ---------------------------------------------------------------------
    DESIGN GOALS
    - Rolling-origin backtesting
@@ -7,7 +7,7 @@
    - 5-year forward horizon (60 months)
    - 1:1 unique evaluation grain:
        run_id + customer_group_key_id + mtrl_num + forecast_month
-   - Simple / explainable v1 baseline
+   - Simple / explainable v5 baseline
    - Material-level forecast with hierarchical fallbacks
    - Uses actual qty for dollar-error evaluation
    ===================================================================== */
@@ -17,7 +17,7 @@
    STEP 0: BACKTEST RUNS
    - Same jump-off points as WAC pipeline
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_runs_v1 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_runs_v5 AS
 SELECT
     'BT_2024_01' AS run_id,
     TO_DATE('2024-01-01') AS jump_off_month,
@@ -46,10 +46,10 @@ SELECT
    - One row per customer + material series
    - Used for run eligibility and diagnostics
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_series_profile_v1 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_series_profile_v5 AS
 WITH base AS (
     SELECT *
-    FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v2
+    FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v5
 ),
 ranked AS (
     SELECT
@@ -95,8 +95,6 @@ agg AS (
 
         MAX(national_grp_id) AS national_grp_id,
         MAX(national_grp_desc) AS national_grp_desc,
-        MAX(subset_l2_id) AS subset_l2_id,
-        MAX(subset_l2_desc) AS subset_l2_desc,
         MAX(customer_group_key_desc) AS customer_group_key_desc,
 
         MAX(mtrl_nme_nvgton) AS mtrl_nme_nvgton,
@@ -137,7 +135,7 @@ LEFT JOIN last_row l
    STEP 2: RUN ELIGIBILITY
    - Eligible if series existed on or before run history_end_dt
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_run_eligibility_v1 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_run_eligibility_v5 AS
 SELECT
     r.run_id,
     r.jump_off_month,
@@ -154,8 +152,6 @@ SELECT
 
     sp.national_grp_id,
     sp.national_grp_desc,
-    sp.subset_l2_id,
-    sp.subset_l2_desc,
     sp.customer_group_key_desc,
 
     sp.mtrl_nme_nvgton,
@@ -183,8 +179,8 @@ SELECT
         ELSE 'ELIGIBLE'
     END AS data_coverage_flag
 
-FROM uspd_analytics_den.analytics_gold.contract_price_bt_runs_v1 r
-CROSS JOIN uspd_analytics_den.analytics_gold.contract_price_bt_series_profile_v1 sp
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_runs_v5 r
+CROSS JOIN uspd_analytics_den.analytics_gold.contract_price_bt_series_profile_v5 sp
 ;
 
 
@@ -193,10 +189,10 @@ CROSS JOIN uspd_analytics_den.analytics_gold.contract_price_bt_series_profile_v1
    - Anchor comes from raw base table, not training-clean
    - Uses latest observed month <= history_end_dt
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_last_actual_v1 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_last_actual_v5 AS
 WITH eligible AS (
     SELECT *
-    FROM uspd_analytics_den.analytics_gold.contract_price_bt_run_eligibility_v1
+    FROM uspd_analytics_den.analytics_gold.contract_price_bt_run_eligibility_v5
     WHERE is_eligible_for_run = 1
 ),
 raw_hist AS (
@@ -219,7 +215,7 @@ raw_hist AS (
             ORDER BY b.cal_month_start_dt DESC
         ) AS rn
     FROM eligible e
-    JOIN uspd_analytics_den.analytics_gold.contract_price_modeling_base_v2 b
+    JOIN uspd_analytics_den.analytics_gold.contract_price_modeling_base_v5 b
       ON e.customer_group_key_id = b.customer_group_key_id
      AND e.mtrl_num = b.mtrl_num
      AND b.cal_month_start_dt <= e.history_end_dt
@@ -245,7 +241,7 @@ WHERE rn = 1
    STEP 4: RUN-SPECIFIC CLEAN HIST PANEL
    - Historical panel used for model fitting only
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_hist_clean_v1 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_hist_clean_v5 AS
 SELECT
     e.run_id,
     e.jump_off_month,
@@ -262,8 +258,6 @@ SELECT
 
     e.national_grp_id,
     e.national_grp_desc,
-    e.subset_l2_id,
-    e.subset_l2_desc,
     e.customer_group_key_desc,
 
     e.mtrl_nme_nvgton,
@@ -283,8 +277,8 @@ SELECT
     t.wac_spread,
     t.mom_contract_price_change_pct,
     t.contract_price_change_outlier_flag
-FROM uspd_analytics_den.analytics_gold.contract_price_bt_run_eligibility_v1 e
-JOIN uspd_analytics_den.analytics_gold.contract_price_training_clean_v2 t
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_run_eligibility_v5 e
+JOIN uspd_analytics_den.analytics_gold.contract_price_training_clean_v5 t
   ON e.customer_group_key_id = t.customer_group_key_id
  AND e.mtrl_num = t.mtrl_num
  AND t.cal_month_start_dt >= e.history_start_dt
@@ -300,14 +294,14 @@ WHERE
    - Recent 12m vs previous 12m average contract price
    - Conservative monthly trend cap: [-2%, +2%]
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_material_assumptions_v1 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_material_assumptions_v5 AS
 WITH last_hist_month AS (
     SELECT
         run_id,
         customer_group_key_id,
         mtrl_num,
         MAX(cal_month_start_dt) AS anchor_month
-    FROM uspd_analytics_den.analytics_gold.contract_price_bt_hist_clean_v1
+    FROM uspd_analytics_den.analytics_gold.contract_price_bt_hist_clean_v5
     GROUP BY
         run_id,
         customer_group_key_id,
@@ -342,7 +336,7 @@ agg AS (
             THEN h.contract_price
         END) AS prior_12m_avg_contract_price
     FROM last_hist_month lhm
-    LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_bt_hist_clean_v1 h
+    LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_bt_hist_clean_v5 h
       ON lhm.run_id = h.run_id
      AND lhm.customer_group_key_id = h.customer_group_key_id
      AND lhm.mtrl_num = h.mtrl_num
@@ -400,7 +394,7 @@ FROM agg a
 /* ---------------------------------------------------------------------
    STEP 5B: RUN CUSTOMER + PRODUCT GROUP FALLBACK
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_fallback_product_group_v1 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_fallback_product_group_v5 AS
 WITH monthly_group AS (
     SELECT
         run_id,
@@ -417,7 +411,7 @@ WITH monthly_group AS (
         SUM(total_net_cos) / NULLIF(SUM(total_sls_qty), 0) AS contract_price,
         SUM(wac_weighted * total_sls_qty) / NULLIF(SUM(total_sls_qty), 0) AS wac_weighted,
         (SUM(total_net_cos) / NULLIF(SUM(wac_weighted * total_sls_qty), 0)) - 1 AS wac_spread
-    FROM uspd_analytics_den.analytics_gold.contract_price_bt_hist_clean_v1
+    FROM uspd_analytics_den.analytics_gold.contract_price_bt_hist_clean_v5
     WHERE final_product_group IS NOT NULL
       AND TRIM(final_product_group) <> ''
       AND final_product_group <> 'UNKNOWN'
@@ -520,7 +514,7 @@ FROM agg a
 /* ---------------------------------------------------------------------
    STEP 5C: RUN CUSTOMER + CATEGORY FALLBACK
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_fallback_category_v1 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_fallback_category_v5 AS
 WITH monthly_cat AS (
     SELECT
         run_id,
@@ -533,7 +527,7 @@ WITH monthly_cat AS (
         SUM(total_net_cos) AS total_net_cos,
         SUM(total_sls_qty) AS total_sls_qty,
         SUM(total_net_cos) / NULLIF(SUM(total_sls_qty), 0) AS contract_price
-    FROM uspd_analytics_den.analytics_gold.contract_price_bt_hist_clean_v1
+    FROM uspd_analytics_den.analytics_gold.contract_price_bt_hist_clean_v5
     GROUP BY
         run_id,
         customer_group_key_id,
@@ -631,7 +625,7 @@ FROM agg a
 /* ---------------------------------------------------------------------
    STEP 5D: RUN SEGMENT + CLASS OF TRADE + CATEGORY FALLBACK
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_fallback_segment_category_v1 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_fallback_segment_category_v5 AS
 WITH monthly_seg_cat AS (
     SELECT
         run_id,
@@ -643,7 +637,7 @@ WITH monthly_seg_cat AS (
         SUM(total_net_cos) AS total_net_cos,
         SUM(total_sls_qty) AS total_sls_qty,
         SUM(total_net_cos) / NULLIF(SUM(total_sls_qty), 0) AS contract_price
-    FROM uspd_analytics_den.analytics_gold.contract_price_bt_hist_clean_v1
+    FROM uspd_analytics_den.analytics_gold.contract_price_bt_hist_clean_v5
     GROUP BY
         run_id,
         cust_segment,
@@ -753,7 +747,7 @@ FROM agg a
        4) SEGMENT_CATEGORY
        5) STATIC_NO_TREND
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_resolved_assumptions_v1 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_resolved_assumptions_v5 AS
 SELECT
     e.run_id,
     e.jump_off_month,
@@ -769,8 +763,6 @@ SELECT
 
     e.national_grp_id,
     e.national_grp_desc,
-    e.subset_l2_id,
-    e.subset_l2_desc,
     e.customer_group_key_desc,
 
     e.mtrl_nme_nvgton,
@@ -831,24 +823,24 @@ SELECT
         ELSE 'STATIC_NO_TREND'
     END AS trend_source
 
-FROM uspd_analytics_den.analytics_gold.contract_price_bt_run_eligibility_v1 e
-LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_bt_last_actual_v1 la
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_run_eligibility_v5 e
+LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_bt_last_actual_v5 la
   ON e.run_id = la.run_id
  AND e.customer_group_key_id = la.customer_group_key_id
  AND e.mtrl_num = la.mtrl_num
-LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_bt_material_assumptions_v1 ma
+LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_bt_material_assumptions_v5 ma
   ON e.run_id = ma.run_id
  AND e.customer_group_key_id = ma.customer_group_key_id
  AND e.mtrl_num = ma.mtrl_num
-LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_bt_fallback_product_group_v1 pg
+LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_bt_fallback_product_group_v5 pg
   ON e.run_id = pg.run_id
  AND e.customer_group_key_id = pg.customer_group_key_id
  AND e.final_product_group = pg.final_product_group
-LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_bt_fallback_category_v1 cf
+LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_bt_fallback_category_v5 cf
   ON e.run_id = cf.run_id
  AND e.customer_group_key_id = cf.customer_group_key_id
  AND e.cust_prod_category = cf.cust_prod_category
-LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_bt_fallback_segment_category_v1 sc
+LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_bt_fallback_segment_category_v5 sc
   ON e.run_id = sc.run_id
  AND e.cust_segment = sc.cust_segment
  AND e.acct_classification = sc.acct_classification
@@ -864,7 +856,7 @@ WHERE
    - Uses actual observed months after jump-off
    - Limited to 60 months forward
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_future_actual_months_v1 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_future_actual_months_v5 AS
 SELECT DISTINCT
     ra.run_id,
     ra.jump_off_month,
@@ -873,8 +865,8 @@ SELECT DISTINCT
     b.cal_month_start_dt AS forecast_month,
     CAST(months_between(b.cal_month_start_dt, ra.jump_off_month) AS INT) + 1 AS forecast_horizon_month_num,
     DATE_FORMAT(b.cal_month_start_dt, 'yyyy-MM') AS forecast_year_month
-FROM uspd_analytics_den.analytics_gold.contract_price_bt_resolved_assumptions_v1 ra
-JOIN uspd_analytics_den.analytics_gold.contract_price_modeling_base_v2 b
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_resolved_assumptions_v5 ra
+JOIN uspd_analytics_den.analytics_gold.contract_price_modeling_base_v5 b
   ON ra.customer_group_key_id = b.customer_group_key_id
  AND ra.mtrl_num = b.mtrl_num
  AND b.cal_month_start_dt >= ra.jump_off_month
@@ -886,7 +878,7 @@ JOIN uspd_analytics_den.analytics_gold.contract_price_modeling_base_v2 b
    STEP 8: FORECASTED CONTRACT PRICE
    - Forecast from anchor price using resolved monthly trend
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_forecasted_v1 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_forecasted_v5 AS
 SELECT
     ra.run_id,
     ra.jump_off_month,
@@ -902,8 +894,6 @@ SELECT
 
     ra.national_grp_id,
     ra.national_grp_desc,
-    ra.subset_l2_id,
-    ra.subset_l2_desc,
     ra.customer_group_key_desc,
 
     ra.mtrl_nme_nvgton,
@@ -946,8 +936,8 @@ SELECT
         )
     END AS forecasted_contract_price
 
-FROM uspd_analytics_den.analytics_gold.contract_price_bt_resolved_assumptions_v1 ra
-JOIN uspd_analytics_den.analytics_gold.contract_price_bt_future_actual_months_v1 fam
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_resolved_assumptions_v5 ra
+JOIN uspd_analytics_den.analytics_gold.contract_price_bt_future_actual_months_v5 fam
   ON ra.run_id = fam.run_id
  AND ra.customer_group_key_id = fam.customer_group_key_id
  AND ra.mtrl_num = fam.mtrl_num
@@ -959,7 +949,7 @@ JOIN uspd_analytics_den.analytics_gold.contract_price_bt_future_actual_months_v1
    - Compares forecast vs actual contract price
    - Uses actual qty to compute forecast dollars
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v1 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v5 AS
 WITH joined AS (
     SELECT
         f.run_id,
@@ -976,8 +966,6 @@ WITH joined AS (
 
         f.national_grp_id,
         f.national_grp_desc,
-        f.subset_l2_id,
-        f.subset_l2_desc,
         f.customer_group_key_desc,
 
         f.mtrl_nme_nvgton,
@@ -1002,12 +990,13 @@ WITH joined AS (
         f.forecasted_contract_price,
 
         a.contract_price AS actual_contract_price,
+        a.account_class_cd as account_class_cd,
         a.wac_weighted AS actual_wac_weighted,
         a.wac_spread AS actual_wac_spread,
         a.total_sls_qty AS actual_sls_qty,
         a.total_net_cos AS actual_net_cos
-    FROM uspd_analytics_den.analytics_gold.contract_price_bt_forecasted_v1 f
-    LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_modeling_base_v2 a
+    FROM uspd_analytics_den.analytics_gold.contract_price_bt_forecasted_v5 f
+    LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_modeling_base_v5 a
       ON f.customer_group_key_id = a.customer_group_key_id
      AND f.mtrl_num = a.mtrl_num
      AND f.forecast_month = a.cal_month_start_dt
@@ -1157,7 +1146,7 @@ WHERE forecast_month IS NOT NULL
 /* ---------------------------------------------------------------------
    STEP 10: EVAL SUMMARY BY RUN
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_eval_summary_run_v1 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_eval_summary_run_v5 AS
 SELECT
     run_id,
 
@@ -1181,7 +1170,7 @@ SELECT
 
     COUNT_IF(forecast_explosion_flag = 1) AS explosion_row_cnt
 
-FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v1
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v5
 GROUP BY
     run_id
 ;

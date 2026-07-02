@@ -4,7 +4,7 @@
 --   customer group + fallback product group
 -- =========================================================
 
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_fallback_product_group_v2 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_fallback_product_group_v5 AS
 WITH monthly_group AS (
     SELECT
         customer_group_key_id,
@@ -27,7 +27,7 @@ WITH monthly_group AS (
             SUM(total_net_cos) / NULLIF(SUM(wac_weighted * total_sls_qty), 0)
         ) - 1 AS wac_spread
 
-    FROM uspd_analytics_den.analytics_gold.contract_price_training_clean_v2
+    FROM uspd_analytics_den.analytics_gold.contract_price_training_clean_v5
     WHERE include_for_modeling_flag = 1
       AND final_product_group IS NOT NULL
       AND TRIM(final_product_group) <> ''

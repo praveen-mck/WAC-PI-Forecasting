@@ -5,10 +5,10 @@
 -- - Keeps lifecycle, latest observed price, and descriptive attrs
 -- =========================================================
 
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_history_profile_v2 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_history_profile_v5 AS
 WITH base AS (
     SELECT *
-    FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v2
+    FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v5
 ),
 
 ranked AS (
@@ -60,8 +60,6 @@ agg AS (
 
         MAX(NATIONAL_GRP_ID) AS national_grp_id,
         MAX(NATIONAL_GRP_DESC) AS national_grp_desc,
-        MAX(SUBSET_L2_ID) AS subset_l2_id,
-        MAX(SUBSET_L2_DESC) AS subset_l2_desc,
         MAX(customer_group_key_desc) AS customer_group_key_desc,
 
         MAX(MTRL_NME_NVGTON) AS mtrl_nme_nvgton,
@@ -72,8 +70,6 @@ agg AS (
         MAX(manufacturer_id) AS manufacturer_id,
         MAX(manufacturer_name) AS manufacturer_name,
         MAX(final_product_group) AS final_product_group,
-        MAX(final_product_group_level) AS final_product_group_level,
-
         COUNT(DISTINCT cal_month_start_dt) AS months_with_history,
         AVG(contract_price) AS avg_contract_price,
         percentile_approx(contract_price, 0.5) AS median_contract_price,
