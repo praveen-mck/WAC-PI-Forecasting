@@ -5,21 +5,21 @@
 -- - Keeps lifecycle, latest observed price, and descriptive attrs
 -- =========================================================
 
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_history_profile_v5 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_history_profile_v10 AS
 WITH base AS (
     SELECT *
-    FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v5
+    FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v10
 ),
 
 ranked AS (
     SELECT
         b.*,
         ROW_NUMBER() OVER (
-            PARTITION BY b.customer_group_key_id, b.mtrl_num
+            PARTITION BY b.HYBRID_MODEL_KEY_3T, b.mtrl_num
             ORDER BY b.cal_month_start_dt ASC
         ) AS rn_first,
         ROW_NUMBER() OVER (
-            PARTITION BY b.customer_group_key_id, b.mtrl_num
+            PARTITION BY b.HYBRID_MODEL_KEY_3T, b.mtrl_num
             ORDER BY b.cal_month_start_dt DESC
         ) AS rn_last
     FROM base b
@@ -27,7 +27,7 @@ ranked AS (
 
 first_row AS (
     SELECT
-        customer_group_key_id,
+        HYBRID_MODEL_KEY_3T,
         mtrl_num,
         cal_month_start_dt AS first_month,
         contract_price AS first_contract_price,
@@ -38,7 +38,7 @@ first_row AS (
 
 last_row AS (
     SELECT
-        customer_group_key_id,
+        HYBRID_MODEL_KEY_3T,
         mtrl_num,
         cal_month_start_dt AS last_month,
         contract_price AS last_contract_price,
@@ -51,9 +51,11 @@ last_row AS (
 
 agg AS (
     SELECT
-        customer_group_key_id,
+        HYBRID_MODEL_KEY_3T,
+        MAX(MODEL_TIER) AS MODEL_TIER,
+        MAX(sap_months) AS SAP_MONTHS,
+        MAX(l2_months) AS L2_MONTHS,
         mtrl_num,
-
         MAX(CUST_SEGMENT) AS cust_segment,
         MAX(ACCT_CLASSIFICATION) AS acct_classification,
         MAX(CUST_PROD_CATEGORY) AS cust_prod_category,
@@ -79,7 +81,7 @@ agg AS (
         AVG(total_net_cos) AS avg_monthly_net_cos
     FROM base
     GROUP BY
-        customer_group_key_id,
+        HYBRID_MODEL_KEY_3T,
         mtrl_num
 )
 
@@ -109,9 +111,9 @@ SELECT
 
 FROM agg a
 LEFT JOIN first_row f
-    ON a.customer_group_key_id = f.customer_group_key_id
+    ON a.HYBRID_MODEL_KEY_3T = f.HYBRID_MODEL_KEY_3T
    AND a.mtrl_num = f.mtrl_num
 LEFT JOIN last_row l
-    ON a.customer_group_key_id = l.customer_group_key_id
+    ON a.HYBRID_MODEL_KEY_3T = l.HYBRID_MODEL_KEY_3T
    AND a.mtrl_num = l.mtrl_num
 ;

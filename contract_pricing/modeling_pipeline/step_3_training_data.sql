@@ -6,22 +6,34 @@
 -- - Keeps rows, but marks include_for_modeling_flag
 -- =========================================================
 
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_training_clean_v5 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_training_clean_v10 AS
 WITH ordered AS (
     SELECT
         b.*,
 
         LAG(b.contract_price) OVER (
-            PARTITION BY b.customer_group_key_id, b.mtrl_num
+            PARTITION BY b.HYBRID_MODEL_KEY_3T, b.mtrl_num
             ORDER BY b.cal_month_start_dt
         ) AS prev_contract_price,
 
         LAG(b.wac_spread) OVER (
-            PARTITION BY b.customer_group_key_id, b.mtrl_num
+            PARTITION BY b.HYBRID_MODEL_KEY_3T, b.mtrl_num
             ORDER BY b.cal_month_start_dt
-        ) AS prev_wac_spread
+        ) AS prev_wac_spread,
 
-    FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v5 b
+        -- row position within series — useful for feature engineering
+        -- and for identifying first-month rows where prev_ cols are null
+        ROW_NUMBER() OVER (
+            PARTITION BY b.HYBRID_MODEL_KEY_3T, b.mtrl_num
+            ORDER BY b.cal_month_start_dt ASC
+        ) AS series_month_index,
+
+        -- total valid months in series at time of training
+        COUNT(CASE WHEN b.exclude_from_training_flag = 0 THEN 1 END) OVER (
+            PARTITION BY b.HYBRID_MODEL_KEY_3T, b.mtrl_num
+        ) AS series_valid_month_count
+
+    FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v10 b
 ),
 
 calc AS (
@@ -29,21 +41,30 @@ calc AS (
         o.*,
 
         CASE
-            WHEN o.prev_contract_price IS NOT NULL AND o.prev_contract_price <> 0
-            THEN (o.contract_price - o.prev_contract_price) / o.prev_contract_price
-        END AS mom_contract_price_change_pct,
+            WHEN o.prev_contract_price IS NOT NULL
+             AND o.prev_contract_price <> 0
+            THEN (o.contract_price - o.prev_contract_price)
+                 / o.prev_contract_price
+        END                                             AS mom_contract_price_change_pct,
 
         CASE
             WHEN o.prev_wac_spread IS NOT NULL
             THEN o.wac_spread - o.prev_wac_spread
-        END AS mom_wac_spread_change_abs,
+        END                                             AS mom_wac_spread_change_abs,
 
         CASE
             WHEN o.prev_contract_price IS NOT NULL
              AND o.prev_contract_price <> 0
-             AND ABS((o.contract_price - o.prev_contract_price) / o.prev_contract_price) > 0.50
+             AND ABS(
+                    (o.contract_price - o.prev_contract_price)
+                    / o.prev_contract_price
+                ) > 0.50
             THEN 1 ELSE 0
-        END AS contract_price_change_outlier_flag
+        END                                             AS contract_price_change_outlier_flag,
+
+        -- sap-to-l2 coverage ratio: close to 1 = dominant customer in group,
+        -- close to 0 = thin individual history relative to group
+        o.sap_months / NULLIF(o.l2_months, 0)          AS sap_to_l2_coverage_ratio
 
     FROM ordered o
 )
@@ -52,10 +73,10 @@ SELECT
     c.*,
 
     CASE
-        WHEN c.exclude_from_training_flag = 1 THEN 0
-        WHEN c.contract_price_change_outlier_flag = 1 THEN 0
+        WHEN c.exclude_from_training_flag = 1          THEN 0
+        WHEN c.contract_price_change_outlier_flag = 1  THEN 0
         ELSE 1
-    END AS include_for_modeling_flag
+    END                                                 AS include_for_modeling_flag
 
 FROM calc c
 ;

@@ -11,25 +11,25 @@
 -- - Trend is set to 0 for all material-level assumptions
 -- =========================================================
 
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_material_assumptions_v6 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_material_assumptions_v10 AS
 
 WITH base AS (
     SELECT *
-    FROM uspd_analytics_den.analytics_gold.contract_price_training_clean_v5
+    FROM uspd_analytics_den.analytics_gold.contract_price_training_clean_v10
     WHERE include_for_modeling_flag = 1
 ),
 
 -- =========================================================
--- Find latest observed month for each customer + material
+-- Find latest observed month for each hybrid key + material
 -- =========================================================
 last_month AS (
     SELECT
-        customer_group_key_id,
+        HYBRID_MODEL_KEY_3T,
         mtrl_num,
         MAX(cal_month_start_dt) AS anchor_month
     FROM base
     GROUP BY
-        customer_group_key_id,
+        HYBRID_MODEL_KEY_3T,
         mtrl_num
 ),
 
@@ -38,21 +38,29 @@ last_month AS (
 -- =========================================================
 anchor_row AS (
     SELECT
-        x.customer_group_key_id,
+        x.HYBRID_MODEL_KEY_3T,
         x.mtrl_num,
-        x.cal_month_start_dt AS anchor_month,
+        x.cal_month_start_dt        AS anchor_month,
 
-        x.contract_price AS anchor_contract_price,
-        x.wac_spread AS anchor_wac_spread,
-        x.total_sls_qty AS anchor_total_sls_qty,
-        x.total_net_cos AS anchor_total_net_cos,
+        x.contract_price            AS anchor_contract_price,
+        x.wac_spread                AS anchor_wac_spread,
+        x.total_sls_qty             AS anchor_total_sls_qty,
+        x.total_net_cos             AS anchor_total_net_cos,
 
+        -- tier metadata
+        x.MODEL_TIER,
+        x.sap_months,
+        x.l2_months,
+        x.sap_to_l2_coverage_ratio,
+
+        -- descriptors
+        x.customer_group_key_id,
+        x.customer_group_key_desc,
         x.cust_segment,
         x.acct_classification,
         x.cust_prod_category,
         x.national_grp_id,
         x.national_grp_desc,
-        x.customer_group_key_desc,
         x.mtrl_nme_nvgton,
         x.ndc_num,
         x.product_family,
@@ -66,7 +74,7 @@ anchor_row AS (
         SELECT
             b.*,
             ROW_NUMBER() OVER (
-                PARTITION BY b.customer_group_key_id, b.mtrl_num
+                PARTITION BY b.HYBRID_MODEL_KEY_3T, b.mtrl_num
                 ORDER BY b.cal_month_start_dt DESC
             ) AS rn
         FROM base b
@@ -84,114 +92,110 @@ anchor_row AS (
 -- =========================================================
 calendar_window_agg AS (
     SELECT
-        lm.customer_group_key_id,
+        lm.HYBRID_MODEL_KEY_3T,
         lm.mtrl_num,
         lm.anchor_month,
 
         COUNT(DISTINCT CASE
             WHEN b.cal_month_start_dt > ADD_MONTHS(lm.anchor_month, -12)
             THEN b.cal_month_start_dt
-        END) AS recent_12m_months,
+        END)                                            AS recent_12m_months,
 
         COUNT(DISTINCT CASE
             WHEN b.cal_month_start_dt > ADD_MONTHS(lm.anchor_month, -24)
              AND b.cal_month_start_dt <= ADD_MONTHS(lm.anchor_month, -12)
             THEN b.cal_month_start_dt
-        END) AS prior_12m_months,
+        END)                                            AS prior_12m_months,
 
         AVG(CASE
             WHEN b.cal_month_start_dt > ADD_MONTHS(lm.anchor_month, -12)
             THEN b.contract_price
-        END) AS recent_12m_avg_contract_price,
+        END)                                            AS recent_12m_avg_contract_price,
 
         AVG(CASE
             WHEN b.cal_month_start_dt > ADD_MONTHS(lm.anchor_month, -24)
              AND b.cal_month_start_dt <= ADD_MONTHS(lm.anchor_month, -12)
             THEN b.contract_price
-        END) AS prior_12m_avg_contract_price,
+        END)                                            AS prior_12m_avg_contract_price,
 
         AVG(CASE
             WHEN b.cal_month_start_dt > ADD_MONTHS(lm.anchor_month, -12)
             THEN b.wac_spread
-        END) AS recent_12m_avg_wac_spread,
+        END)                                            AS recent_12m_avg_wac_spread,
 
         AVG(CASE
             WHEN b.cal_month_start_dt > ADD_MONTHS(lm.anchor_month, -24)
              AND b.cal_month_start_dt <= ADD_MONTHS(lm.anchor_month, -12)
             THEN b.wac_spread
-        END) AS prior_12m_avg_wac_spread,
+        END)                                            AS prior_12m_avg_wac_spread,
 
         AVG(CASE
             WHEN b.cal_month_start_dt > ADD_MONTHS(lm.anchor_month, -12)
             THEN b.total_sls_qty
-        END) AS recent_12m_avg_total_sls_qty,
+        END)                                            AS recent_12m_avg_total_sls_qty,
 
         AVG(CASE
             WHEN b.cal_month_start_dt > ADD_MONTHS(lm.anchor_month, -24)
              AND b.cal_month_start_dt <= ADD_MONTHS(lm.anchor_month, -12)
             THEN b.total_sls_qty
-        END) AS prior_12m_avg_total_sls_qty,
+        END)                                            AS prior_12m_avg_total_sls_qty,
 
         AVG(CASE
             WHEN b.cal_month_start_dt > ADD_MONTHS(lm.anchor_month, -12)
             THEN b.total_net_cos
-        END) AS recent_12m_avg_total_net_cos,
+        END)                                            AS recent_12m_avg_total_net_cos,
 
         AVG(CASE
             WHEN b.cal_month_start_dt > ADD_MONTHS(lm.anchor_month, -24)
              AND b.cal_month_start_dt <= ADD_MONTHS(lm.anchor_month, -12)
             THEN b.total_net_cos
-        END) AS prior_12m_avg_total_net_cos
+        END)                                            AS prior_12m_avg_total_net_cos
 
     FROM last_month lm
     LEFT JOIN base b
-      ON lm.customer_group_key_id = b.customer_group_key_id
-     AND lm.mtrl_num = b.mtrl_num
+      ON lm.HYBRID_MODEL_KEY_3T = b.HYBRID_MODEL_KEY_3T
+     AND lm.mtrl_num             = b.mtrl_num
     GROUP BY
-        lm.customer_group_key_id,
+        lm.HYBRID_MODEL_KEY_3T,
         lm.mtrl_num,
         lm.anchor_month
 ),
 
 -- =========================================================
 -- Rank all observed historical rows by recency
--- This allows fallback to the latest 12 observed months,
--- regardless of whether they are inside the recent calendar window.
 -- =========================================================
 ranked_history AS (
     SELECT
         b.*,
         ROW_NUMBER() OVER (
-            PARTITION BY b.customer_group_key_id, b.mtrl_num
+            PARTITION BY b.HYBRID_MODEL_KEY_3T, b.mtrl_num
             ORDER BY b.cal_month_start_dt DESC
         ) AS history_rn
     FROM base b
 ),
 
 -- =========================================================
--- Average of latest 12 observed historical months/rows
--- If fewer than 12 rows exist, this still averages available rows.
--- Later logic decides whether to use average or latest price.
+-- Average of latest 12 observed historical months
 -- =========================================================
 latest_12_observed_agg AS (
     SELECT
-        customer_group_key_id,
+        HYBRID_MODEL_KEY_3T,
         mtrl_num,
 
-        COUNT(DISTINCT cal_month_start_dt) AS latest_12_observed_months,
+        COUNT(DISTINCT cal_month_start_dt)              AS latest_12_observed_months,
 
-        AVG(contract_price) AS latest_12_observed_avg_contract_price,
-        AVG(wac_spread) AS latest_12_observed_avg_wac_spread,
-        AVG(total_sls_qty) AS latest_12_observed_avg_total_sls_qty,
-        AVG(total_net_cos) AS latest_12_observed_avg_total_net_cos,
+        AVG(contract_price)                             AS latest_12_observed_avg_contract_price,
+        AVG(wac_spread)                                 AS latest_12_observed_avg_wac_spread,
+        AVG(total_sls_qty)                              AS latest_12_observed_avg_total_sls_qty,
+        AVG(total_net_cos)                              AS latest_12_observed_avg_total_net_cos,
 
-        MIN(cal_month_start_dt) AS latest_12_observed_start_month,
-        MAX(cal_month_start_dt) AS latest_12_observed_end_month
+        MIN(cal_month_start_dt)                         AS latest_12_observed_start_month,
+        MAX(cal_month_start_dt)                         AS latest_12_observed_end_month
 
     FROM ranked_history
     WHERE history_rn <= 12
     GROUP BY
-        customer_group_key_id,
+        HYBRID_MODEL_KEY_3T,
         mtrl_num
 ),
 
@@ -200,7 +204,7 @@ latest_12_observed_agg AS (
 -- =========================================================
 combined AS (
     SELECT
-        cwa.customer_group_key_id,
+        cwa.HYBRID_MODEL_KEY_3T,
         cwa.mtrl_num,
         cwa.anchor_month,
 
@@ -229,24 +233,33 @@ combined AS (
 
     FROM calendar_window_agg cwa
     LEFT JOIN latest_12_observed_agg l12
-      ON cwa.customer_group_key_id = l12.customer_group_key_id
-     AND cwa.mtrl_num = l12.mtrl_num
+      ON cwa.HYBRID_MODEL_KEY_3T = l12.HYBRID_MODEL_KEY_3T
+     AND cwa.mtrl_num             = l12.mtrl_num
 )
 
 -- =========================================================
 -- Final material assumptions table
 -- =========================================================
 SELECT
-    c.customer_group_key_id,
+    c.HYBRID_MODEL_KEY_3T,
     c.mtrl_num,
 
-    -- Customer/product descriptors from latest observed anchor row
+    -- tier metadata from anchor row
+    ar.MODEL_TIER,
+    ar.sap_months,
+    ar.l2_months,
+    ar.sap_to_l2_coverage_ratio,
+
+    -- backward-compatible customer group key
+    ar.customer_group_key_id,
+    ar.customer_group_key_desc,
+
+    -- descriptors from latest observed anchor row
     ar.cust_segment,
     ar.acct_classification,
     ar.cust_prod_category,
     ar.national_grp_id,
     ar.national_grp_desc,
-    ar.customer_group_key_desc,
     ar.mtrl_nme_nvgton,
     ar.ndc_num,
     ar.product_family,
@@ -256,14 +269,14 @@ SELECT
     ar.final_product_group,
     ar.final_product_group_level,
 
-    -- Latest observed anchor values
+    -- latest observed anchor values
     c.anchor_month,
     ar.anchor_contract_price,
     ar.anchor_wac_spread,
     ar.anchor_total_sls_qty,
     ar.anchor_total_net_cos,
 
-    -- Calendar-window history stats
+    -- calendar-window history stats
     c.recent_12m_months,
     c.prior_12m_months,
 
@@ -279,7 +292,7 @@ SELECT
     c.recent_12m_avg_total_net_cos,
     c.prior_12m_avg_total_net_cos,
 
-    -- Latest observed fallback stats
+    -- latest observed fallback stats
     c.latest_12_observed_months,
     c.latest_12_observed_start_month,
     c.latest_12_observed_end_month,
@@ -297,137 +310,141 @@ SELECT
     -- 3. 6-11 observed months                   -> available observed avg
     -- 4. <6 observed months                     -> latest observed price
     -- =====================================================
+    -- =====================================================
+    -- Forecast start contract price (Fix 1 + Fix 2 applied)
+    -- =====================================================
     CASE
         WHEN c.prior_12m_months >= 6
          AND c.prior_12m_avg_contract_price IS NOT NULL
          AND c.prior_12m_avg_contract_price > 0
+         AND (
+                ar.anchor_wac_spread IS NULL
+             OR c.prior_12m_avg_wac_spread IS NULL
+             OR (ar.anchor_wac_spread - c.prior_12m_avg_wac_spread) > -0.30
+             )
+         AND c.recent_12m_avg_contract_price / NULLIF(c.prior_12m_avg_contract_price, 0) >= 0.40
+         AND ar.anchor_contract_price / NULLIF(c.prior_12m_avg_contract_price, 0) >= 0.15
         THEN c.prior_12m_avg_contract_price
 
         WHEN c.latest_12_observed_months >= 12
         THEN c.latest_12_observed_avg_contract_price
 
-        WHEN c.latest_12_observed_months >= 6
-        THEN c.latest_12_observed_avg_contract_price
-
         ELSE ar.anchor_contract_price
-    END AS forecast_start_contract_price,
+    END                                                 AS forecast_start_contract_price,
 
     -- =====================================================
-    -- Forecast start WAC spread
-    -- Mirrors contract price baseline logic.
+    -- Forecast start WAC spread (mirrors contract price logic)
     -- =====================================================
     CASE
-        WHEN c.prior_12m_months >= 6
+        WHEN c.prior_12m_months >= 12
          AND c.prior_12m_avg_wac_spread IS NOT NULL
+         AND (
+                ar.anchor_wac_spread IS NULL
+             OR c.prior_12m_avg_wac_spread IS NULL
+             OR (ar.anchor_wac_spread - c.prior_12m_avg_wac_spread) > -0.30
+             )
+         AND c.recent_12m_avg_contract_price / NULLIF(c.prior_12m_avg_contract_price, 0) >= 0.40
+         AND ar.anchor_contract_price / NULLIF(c.prior_12m_avg_contract_price, 0) >= 0.15
         THEN c.prior_12m_avg_wac_spread
 
         WHEN c.latest_12_observed_months >= 12
         THEN c.latest_12_observed_avg_wac_spread
 
-        WHEN c.latest_12_observed_months >= 6
-        THEN c.latest_12_observed_avg_wac_spread
-
         ELSE ar.anchor_wac_spread
-    END AS forecast_start_wac_spread,
+    END                                                 AS forecast_start_wac_spread,
 
     -- =====================================================
-    -- Forecast start sales quantity
-    -- Mirrors contract price baseline logic.
+    -- Forecast start sales quantity (mirrors contract price logic)
     -- =====================================================
     CASE
         WHEN c.prior_12m_months >= 6
          AND c.prior_12m_avg_total_sls_qty IS NOT NULL
+         AND c.recent_12m_avg_contract_price / NULLIF(c.prior_12m_avg_contract_price, 0) >= 0.40
+         AND ar.anchor_contract_price / NULLIF(c.prior_12m_avg_contract_price, 0) >= 0.15
         THEN c.prior_12m_avg_total_sls_qty
 
         WHEN c.latest_12_observed_months >= 12
         THEN c.latest_12_observed_avg_total_sls_qty
 
-        WHEN c.latest_12_observed_months >= 6
-        THEN c.latest_12_observed_avg_total_sls_qty
-
         ELSE ar.anchor_total_sls_qty
-    END AS forecast_start_total_sls_qty,
+    END                                                 AS forecast_start_total_sls_qty,
 
     -- =====================================================
-    -- Forecast start net cost
-    -- Mirrors contract price baseline logic.
+    -- Forecast start net cost (mirrors contract price logic)
     -- =====================================================
     CASE
         WHEN c.prior_12m_months >= 6
          AND c.prior_12m_avg_total_net_cos IS NOT NULL
+         AND c.recent_12m_avg_contract_price / NULLIF(c.prior_12m_avg_contract_price, 0) >= 0.40
+         AND ar.anchor_contract_price / NULLIF(c.prior_12m_avg_contract_price, 0) >= 0.15
         THEN c.prior_12m_avg_total_net_cos
 
         WHEN c.latest_12_observed_months >= 12
         THEN c.latest_12_observed_avg_total_net_cos
 
-        WHEN c.latest_12_observed_months >= 6
-        THEN c.latest_12_observed_avg_total_net_cos
-
         ELSE ar.anchor_total_net_cos
-    END AS forecast_start_total_net_cos,
+    END                                                 AS forecast_start_total_net_cos,
 
     -- =====================================================
-    -- Raw monthly trend
-    --
-    -- 24m trend logic removed.
-    -- Kept as 0 for downstream schema compatibility.
+    -- Trend placeholders
     -- =====================================================
-    0 AS monthly_trend_pct_raw,
+    0                                                   AS monthly_trend_pct_raw,
+    0                                                   AS expected_monthly_trend_pct,
 
     -- =====================================================
-    -- Expected monthly trend
-    --
-    -- 24m trend logic removed.
-    -- Kept as 0 for downstream schema compatibility.
-    -- =====================================================
-    0 AS expected_monthly_trend_pct,
-
-    -- =====================================================
-    -- Material baseline source
-    --
-    -- No MATERIAL_24M_TREND category.
+    -- Material baseline source label (matches forecast_start logic)
     -- =====================================================
     CASE
         WHEN c.prior_12m_months >= 6
          AND c.prior_12m_avg_contract_price IS NOT NULL
          AND c.prior_12m_avg_contract_price > 0
+         AND (
+                ar.anchor_wac_spread IS NULL
+             OR c.prior_12m_avg_wac_spread IS NULL
+             OR (ar.anchor_wac_spread - c.prior_12m_avg_wac_spread) > -0.30
+             )
+         AND c.recent_12m_avg_contract_price / NULLIF(c.prior_12m_avg_contract_price, 0) >= 0.40
+         AND ar.anchor_contract_price / NULLIF(c.prior_12m_avg_contract_price, 0) >= 0.15
         THEN 'MATERIAL_PRIOR_12M_AVG_BASELINE'
 
         WHEN c.latest_12_observed_months >= 12
         THEN 'MATERIAL_LATEST_12_OBS_AVG_FALLBACK'
 
-        WHEN c.latest_12_observed_months >= 6
-        THEN 'MATERIAL_6_TO_11_OBS_AVG_FALLBACK'
-
         WHEN c.latest_12_observed_months > 0
-        THEN 'MATERIAL_LT_6_OBS_LATEST_PRICE'
+        THEN 'MATERIAL_LT_12_OBS_LATEST_PRICE'
 
         ELSE 'MATERIAL_NO_HISTORY'
-    END AS material_trend_source,
+    END                                                 AS material_trend_source,
 
     -- =====================================================
-    -- Forecast start price source for QA / explainability
+    -- Forecast start price source (matches forecast_start logic)
     -- =====================================================
     CASE
         WHEN c.prior_12m_months >= 6
          AND c.prior_12m_avg_contract_price IS NOT NULL
          AND c.prior_12m_avg_contract_price > 0
+         AND (
+                ar.anchor_wac_spread IS NULL
+             OR c.prior_12m_avg_wac_spread IS NULL
+             OR (ar.anchor_wac_spread - c.prior_12m_avg_wac_spread) > -0.30
+             )
+         AND c.recent_12m_avg_contract_price / NULLIF(c.prior_12m_avg_contract_price, 0) >= 0.40
+         AND ar.anchor_contract_price / NULLIF(c.prior_12m_avg_contract_price, 0) >= 0.15
         THEN 'AVG_PRIOR_12M_NO_TREND'
 
         WHEN c.latest_12_observed_months >= 12
         THEN 'AVG_LATEST_12_OBSERVED_MONTHS_NO_TREND'
 
-        WHEN c.latest_12_observed_months >= 6
-        THEN 'AVG_6_TO_11_OBSERVED_MONTHS_NO_TREND'
-
         WHEN c.latest_12_observed_months > 0
-        THEN 'LATEST_PRICE_LT_6_OBSERVED_MONTHS_NO_TREND'
+        THEN 'LATEST_PRICE_LT_12_OBSERVED_MONTHS_NO_TREND'
 
         ELSE 'NO_HISTORY_AVAILABLE'
-    END AS forecast_start_price_source
+    END                                                 AS forecast_start_price_source
+
+  
 
 FROM combined c
 LEFT JOIN anchor_row ar
-  ON c.customer_group_key_id = ar.customer_group_key_id
- AND c.mtrl_num = ar.mtrl_num
+  ON c.HYBRID_MODEL_KEY_3T = ar.HYBRID_MODEL_KEY_3T
+ AND c.mtrl_num             = ar.mtrl_num
 ;

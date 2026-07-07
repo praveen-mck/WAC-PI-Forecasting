@@ -1,4 +1,4 @@
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.vw_q_contract_price_base_v6 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.vw_q_contract_price_base_v9 AS
 
 WITH
 /* =========================================================
@@ -90,8 +90,10 @@ item_curr AS (
                     UPDATE_TS DESC
             ) AS rn
         FROM uspd_dealpricing_snowflake.edwrpt.dim_item_curr
+        WHERE ITEM_ACTIVITY_CD = 'A'
     ) x
     WHERE rn = 1
+   
 ),
 
 /* =========================================================
@@ -246,6 +248,8 @@ base_layer AS (
             ELSE 0
         END AS ZOMBIE_SALE_FLAG,
 
+
+
         /* BILL TYPE */
         'Invoice' AS BILL_TYPE,
 
@@ -306,18 +310,19 @@ base_layer AS (
         END AS SUBSET_L2_DESC,
 
         t.NET_COS,
+        t.UNIT_BILL_UOM,
         t.SLS_QTY_BEX,
         t.WAC
 
     FROM base_material_key t
 
-    LEFT JOIN mtrl m
+    INNER JOIN mtrl m
         ON t.MTRL_NUM_STD = m.MTRL_NUM_STD
 
     LEFT JOIN mfr mf
         ON t.MTRL_NUM_STD = mf.MTRL_NUM_STD
 
-    LEFT JOIN item_curr ic
+    INNER JOIN item_curr ic
         ON t.MTRL_NUM_STD = ic.MTRL_NUM_STD
 
     LEFT JOIN ndc
@@ -375,6 +380,7 @@ agg AS (
         PRODUCT_FAMILY,
         THERAPEUTIC_CLASS,
         CONTRACT_TYPE,
+        UNIT_BILL_UOM,
 
         /* NATIONAL GROUP + L2 explicit keys */
         CONCAT_WS('|',
@@ -412,10 +418,22 @@ agg AS (
         SUM(SLS_QTY_BEX) AS TOTAL_SLS_QTY,
 
         /* Quantity-weighted WAC */
-        SUM(WAC * SLS_QTY_BEX) / NULLIF(SUM(SLS_QTY_BEX), 0) AS WAC_WEIGHTED,
+        -- SUM(WAC * SLS_QTY_BEX) / NULLIF(SUM(SLS_QTY_BEX), 0) AS WAC_WEIGHTED,
 
         /* WAC spread */
-        (SUM(NET_COS) / NULLIF(SUM(WAC * SLS_QTY_BEX), 0)) - 1 AS WAC_SPREAD,
+        -- (SUM(NET_COS) / NULLIF(SUM(WAC * SLS_QTY_BEX), 0)) - 1 AS WAC_SPREAD,
+
+        -- FIXED (WAC in source = total transaction WAC, so SUM(WAC)/SUM(QTY)
+        -- gives the correct per-unit weighted average list price)
+        SUM(CASE WHEN WAC IS NOT NULL AND SLS_QTY_BEX > 0
+                THEN WAC END)
+            / NULLIF(SUM(CASE WHEN WAC IS NOT NULL AND SLS_QTY_BEX > 0
+                            THEN SLS_QTY_BEX END), 0)                 AS WAC_WEIGHTED,
+
+        (SUM(NET_COS) / NULLIF(SUM(
+            CASE WHEN WAC IS NOT NULL AND SLS_QTY_BEX > 0
+                THEN WAC END
+        ), 0)) - 1                                                      AS WAC_SPREAD,
 
         /* Existing zombie sale count */
         SUM(ZOMBIE_SALE_FLAG) AS TOTAL_ZOMBIE_SALES,
