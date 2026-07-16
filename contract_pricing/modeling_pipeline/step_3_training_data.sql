@@ -1,3 +1,4 @@
+
 -- =========================================================
 -- STEP 3: TRAINING CLEAN
 -- - Keeps row-level monthly series data
@@ -6,7 +7,7 @@
 -- - Keeps rows, but marks include_for_modeling_flag
 -- =========================================================
 
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_training_clean_v10 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_training_clean_v16 AS
 WITH ordered AS (
     SELECT
         b.*,
@@ -33,7 +34,7 @@ WITH ordered AS (
             PARTITION BY b.HYBRID_MODEL_KEY_3T, b.mtrl_num
         ) AS series_valid_month_count
 
-    FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v10 b
+    FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v16 b
 ),
 
 calc AS (

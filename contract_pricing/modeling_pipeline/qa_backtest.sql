@@ -1,11 +1,11 @@
 /* =====================================================================
-   BACKTEST ERROR DIAGNOSTICS (v12)
+   BACKTEST ERROR DIAGNOSTICS (v16)
    ---------------------------------------------------------------------
    PURPOSE
-   - Identify the largest sources of forecast error in the v12 pipeline
+   - Identify the largest sources of forecast error in the v16 pipeline
    - Each section answers a specific diagnostic question
    - Run sections independently or together
-   - All sections source from contract_price_bt_eval_detail_v12
+   - All sections source from contract_price_bt_eval_detail_v16
 
    SECTION INDEX
    1.  Overall error distribution — is error concentrated or spread?
@@ -24,6 +24,11 @@
    14. WAC spread vs price error — is spread volatility a predictor of error?
    ===================================================================== */
 
+-- =====================================================================
+-- SECTION 1: OVERALL ERROR DISTRIBUTION
+-- Answers: Is error concentrated in a few outliers or broadly spread?
+-- Look for: p90/p95 much larger than median -> outlier-driven
+-- =====================================================================
 -- =====================================================================
 -- SECTION 1: OVERALL ERROR DISTRIBUTION
 -- Answers: Is error concentrated in a few outliers or broadly spread?
@@ -56,9 +61,21 @@ SELECT
                                                         AS p95_ape_dollars,
 
     -- weighted metrics
+    -- WAPE: weights by forecasted dollars (forecast-denominated)
     ROUND(SUM(ae_dollars) / NULLIF(SUM(ABS(actual_dollars)), 0), 4)
                                                         AS wape_dollars,
+
+    -- WMAPE: weights by actual dollars (actual-denominated) — identical formula
+    -- here since ae_dollars = |forecast - actual| and we denominate by actual;
+    -- kept as a named alias for reporting clarity
+    ROUND(SUM(ae_dollars) / NULLIF(SUM(ABS(actual_dollars)), 0), 4)
+                                                        AS wmape_dollars,
+
+    -- Bias metrics
     ROUND(AVG(bias_dollars), 4)                         AS avg_bias_dollars,
+    -- Weighted bias: signed error / sum of actuals — directional signal at portfolio level
+    ROUND(SUM(error_dollars) / NULLIF(SUM(ABS(actual_dollars)), 0), 4)
+                                                        AS weighted_bias_dollars,
 
     -- error concentration: what share of total dollar error comes from top 10% of rows?
     ROUND(
@@ -71,14 +88,13 @@ FROM (
     SELECT *,
         PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY ape_dollars)
             OVER (PARTITION BY run_id)                   AS p90_ape_dollars_threshold
-    FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v12
+    FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v16
     WHERE forecast_month IS NOT NULL
       AND actual_contract_price IS NOT NULL
 ) sub
 GROUP BY run_id
 ORDER BY run_id
 ;
-
 
 -- =====================================================================
 -- SECTION 2: ERROR BY MODEL TIER
@@ -103,7 +119,7 @@ SELECT
     ROUND(SUM(ABS(error_dollars)) / NULLIF(
         SUM(SUM(ABS(error_dollars))) OVER (PARTITION BY run_id), 0), 4)
                                                         AS pct_of_total_error
-FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v12
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v16
 WHERE forecast_month IS NOT NULL
   AND actual_contract_price IS NOT NULL
 GROUP BY run_id, MODEL_TIER
@@ -135,7 +151,7 @@ SELECT
     ROUND(SUM(ABS(error_dollars)) / NULLIF(
         SUM(SUM(ABS(error_dollars))) OVER (PARTITION BY run_id), 0), 4)
                                                         AS pct_of_total_error
-FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v12
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v16
 WHERE forecast_month IS NOT NULL
   AND actual_contract_price IS NOT NULL
 GROUP BY run_id, sparse_price_confidence, is_sparse_price_flag
@@ -163,7 +179,7 @@ SELECT
     ROUND(SUM(ABS(error_dollars)) / NULLIF(
         SUM(SUM(ABS(error_dollars))) OVER (PARTITION BY run_id), 0), 4)
                                                         AS pct_of_total_error
-FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v12
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v16
 WHERE forecast_month IS NOT NULL
   AND actual_contract_price IS NOT NULL
 GROUP BY run_id, forecast_start_price_source
@@ -188,7 +204,7 @@ SELECT
     ROUND(AVG(bias_dollars), 4)                         AS avg_bias_dollars,
     -- positive bias = consistently forecasting too high
     ROUND(AVG(bias_contract_price), 4)                  AS avg_bias_price
-FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v12
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v16
 WHERE forecast_month IS NOT NULL
   AND actual_contract_price IS NOT NULL
 GROUP BY run_id, forecast_horizon_month_num
@@ -219,7 +235,7 @@ SELECT
     ROUND(SUM(ABS(error_dollars)) / NULLIF(
         SUM(SUM(ABS(error_dollars))) OVER (PARTITION BY run_id), 0), 4)
                                                         AS pct_of_total_error
-FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v12
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v16
 WHERE forecast_month IS NOT NULL
   AND actual_contract_price IS NOT NULL
 GROUP BY run_id, cust_segment, acct_classification
@@ -249,7 +265,7 @@ SELECT
     ROUND(SUM(ABS(error_dollars)) / NULLIF(
         SUM(SUM(ABS(error_dollars))) OVER (PARTITION BY run_id), 0), 4)
                                                         AS pct_of_total_error
-FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v12
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v16
 WHERE forecast_month IS NOT NULL
   AND actual_contract_price IS NOT NULL
 GROUP BY run_id, cust_prod_category
@@ -263,38 +279,38 @@ ORDER BY run_id, pct_of_total_error DESC
 --          This is the threshold that matters most operationally.
 -- Look for: TOP_20 with low pass_rate_materiality -> critical problem
 -- =====================================================================
-SELECT
-    run_id,
-    materiality_band,
-    materiality_threshold_pct,
-    COUNT(*)                                            AS row_cnt,
-    COUNT(DISTINCT CONCAT_WS('|', HYBRID_MODEL_KEY_3T, mtrl_num))
-                                                        AS series_cnt,
-    ROUND(AVG(ape_contract_price), 4)                   AS mape_price,
-    ROUND(AVG(ape_dollars), 4)                          AS mape_dollars,
-    ROUND(SUM(ae_dollars) / NULLIF(SUM(ABS(actual_dollars)), 0), 4)
-                                                        AS wape_dollars,
-    ROUND(AVG(bias_dollars), 4)                         AS avg_bias_dollars,
-    ROUND(SUM(ABS(actual_dollars)) / NULLIF(
-        SUM(SUM(ABS(actual_dollars))) OVER (PARTITION BY run_id), 0), 4)
-                                                        AS pct_of_total_revenue,
-    -- pass rate vs materiality threshold
-    ROUND(AVG(pass_flag_vs_materiality_threshold), 4)   AS pass_rate_materiality,
-    COUNT_IF(review_priority = 'CRITICAL')              AS critical_cnt,
-    COUNT_IF(review_priority = 'MODERATE')              AS moderate_cnt,
-    COUNT_IF(review_priority = 'PASS')                  AS pass_cnt
-FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v12
-WHERE forecast_month IS NOT NULL
-  AND actual_contract_price IS NOT NULL
-GROUP BY run_id, materiality_band, materiality_threshold_pct
-ORDER BY run_id,
-    CASE materiality_band
-        WHEN 'TOP_20'    THEN 1
-        WHEN 'MIDDLE_60' THEN 2
-        WHEN 'BOTTOM_20' THEN 3
-        ELSE 4
-    END
-;
+-- SELECT
+--     run_id,
+--     materiality_band,
+--     materiality_threshold_pct,
+--     COUNT(*)                                            AS row_cnt,
+--     COUNT(DISTINCT CONCAT_WS('|', HYBRID_MODEL_KEY_3T, mtrl_num))
+--                                                         AS series_cnt,
+--     ROUND(AVG(ape_contract_price), 4)                   AS mape_price,
+--     ROUND(AVG(ape_dollars), 4)                          AS mape_dollars,
+--     ROUND(SUM(ae_dollars) / NULLIF(SUM(ABS(actual_dollars)), 0), 4)
+--                                                         AS wape_dollars,
+--     ROUND(AVG(bias_dollars), 4)                         AS avg_bias_dollars,
+--     ROUND(SUM(ABS(actual_dollars)) / NULLIF(
+--         SUM(SUM(ABS(actual_dollars))) OVER (PARTITION BY run_id), 0), 4)
+--                                                         AS pct_of_total_revenue,
+--     -- pass rate vs materiality threshold
+--     ROUND(AVG(pass_flag_vs_materiality_threshold), 4)   AS pass_rate_materiality,
+--     COUNT_IF(review_priority = 'CRITICAL')              AS critical_cnt,
+--     COUNT_IF(review_priority = 'MODERATE')              AS moderate_cnt,
+--     COUNT_IF(review_priority = 'PASS')                  AS pass_cnt
+-- FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v16
+-- WHERE forecast_month IS NOT NULL
+--   AND actual_contract_price IS NOT NULL
+-- GROUP BY run_id, materiality_band, materiality_threshold_pct
+-- ORDER BY run_id,
+--     CASE materiality_band
+--         WHEN 'TOP_20'    THEN 1
+--         WHEN 'MIDDLE_60' THEN 2
+--         WHEN 'BOTTOM_20' THEN 3
+--         ELSE 4
+--     END
+-- ;
 
 
 -- =====================================================================
@@ -322,7 +338,7 @@ SELECT
     ROUND(SUM(ABS(error_dollars)) / NULLIF(
         SUM(SUM(ABS(error_dollars))) OVER (PARTITION BY run_id), 0), 4)
                                                         AS pct_of_total_error
-FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v12
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v16
 WHERE forecast_month IS NOT NULL
   AND actual_contract_price IS NOT NULL
 GROUP BY run_id, series_age_at_jumpoff
@@ -373,7 +389,7 @@ SELECT
     MAX(forecast_explosion_flag)                        AS any_explosion,
     MAX(review_priority)                                AS worst_review_priority
 
-FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v12
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v16
 WHERE forecast_month IS NOT NULL
   AND actual_contract_price IS NOT NULL
 GROUP BY
@@ -424,7 +440,7 @@ SELECT
     -- net dollar bias: positive = we're booking too much, negative = too little
     ROUND(SUM(error_dollars), 2)                        AS net_error_dollars
 
-FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v12
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v16
 WHERE forecast_month IS NOT NULL
   AND actual_contract_price IS NOT NULL
 GROUP BY
@@ -464,7 +480,7 @@ SELECT
     ROUND(SUM(ABS(error_dollars)), 2)                   AS total_abs_error_dollars,
     ROUND(AVG(ape_contract_price), 4)                   AS mape_price
 
-FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v12
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v16
 WHERE forecast_explosion_flag = 1
   AND forecast_month IS NOT NULL
 GROUP BY
@@ -505,7 +521,7 @@ SELECT
     ROUND(SUM(ae_dollars) / NULLIF(SUM(ABS(actual_dollars)), 0), 4)
                                                         AS wape_dollars,
     ROUND(AVG(bias_dollars), 4)                         AS avg_bias_dollars
-FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v12
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v16
 WHERE forecast_month IS NOT NULL
   AND actual_contract_price IS NOT NULL
   AND anchor_contract_price IS NOT NULL
@@ -540,7 +556,7 @@ SELECT
     ROUND(SUM(ABS(error_dollars)) / NULLIF(
         SUM(SUM(ABS(error_dollars))) OVER (PARTITION BY run_id), 0), 4)
                                                         AS pct_of_total_error
-FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v12
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v16
 WHERE forecast_month IS NOT NULL
   AND actual_contract_price IS NOT NULL
   AND actual_wac_spread IS NOT NULL

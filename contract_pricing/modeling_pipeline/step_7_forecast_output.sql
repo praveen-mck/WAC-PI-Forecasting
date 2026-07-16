@@ -1,14 +1,4 @@
-
--- =========================================================
--- STEP 7: FORECAST
--- - Applies forecast_start_contract_price + 0 trend across
---   all 60 future months
--- - Joins material assumptions for full descriptor context
--- - forecast_start_contract_price is the v12 price anchor:
---     prior 12m avg (>= 6 months) -> latest observed avg (>= 6) -> last price
--- =========================================================
-
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_forecast_v12 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_forecast_v16 AS
 SELECT
     fm.HYBRID_MODEL_KEY_3T,
     fm.mtrl_num,
@@ -24,8 +14,8 @@ SELECT
     ma.sap_to_l2_coverage_ratio,
 
     -- backward-compatible descriptor
-    ma.customer_group_key_id,
-    ma.customer_group_key_desc,
+    -- ma.customer_group_key_id,
+    -- ma.customer_group_key_desc,
 
     -- series descriptors
     ma.cust_segment,
@@ -51,25 +41,25 @@ SELECT
 
     -- Derived inline (columns not yet materialized in upstream table)
     CASE
-        WHEN ma.latest_12_observed_months >= 6  THEN 'PRICE_6MO_AVG'
-        WHEN ma.latest_12_observed_months >= 3  THEN 'PRICE_3_TO_5_MO_AVG'
-        WHEN ma.latest_12_observed_months >= 1  THEN 'PRICE_LAST_OBSERVED'
+        WHEN ma.latest_6_observed_months >= 6  THEN 'PRICE_6MO_AVG'
+        WHEN ma.latest_6_observed_months >= 3  THEN 'PRICE_3_TO_5_MO_AVG'
+        WHEN ma.latest_6_observed_months >= 1  THEN 'PRICE_LAST_OBSERVED'
         ELSE 'NO_PRICE_AVAILABLE'
     END                                                 AS sparse_price_confidence,
 
     CASE
-        WHEN ma.latest_12_observed_months < 6 THEN 1
+        WHEN ma.latest_6_observed_months < 6 THEN 1
         ELSE 0
     END                                                 AS is_sparse_price_flag,
 
     -- history depth diagnostics
-    ma.recent_12m_months,
-    ma.prior_12m_months,
-    ma.latest_12_observed_months,
-    ma.latest_12_observed_start_month,
-    ma.latest_12_observed_end_month,
+    ma.recent_6m_months,
+    ma.prior_6m_months,
+    ma.latest_6_observed_months,
+    ma.latest_6_observed_start_month,
+    ma.latest_6_observed_end_month,
 
-    -- trend = 0 for all series (v12 design)
+    -- trend = 0 for all series (v16 design)
     ma.expected_monthly_trend_pct,
     ma.material_trend_source,
 
@@ -115,8 +105,8 @@ SELECT
         ) * COALESCE(ma.forecast_start_total_sls_qty, 0)
     END                                                 AS forecasted_net_cos
 
-FROM uspd_analytics_den.analytics_gold.contract_price_future_months_v12 fm
-JOIN uspd_analytics_den.analytics_gold.contract_price_material_assumptions_v12 ma
+FROM uspd_analytics_den.analytics_gold.contract_price_future_months_v16 fm
+JOIN uspd_analytics_den.analytics_gold.contract_price_material_assumptions_v16 ma
   ON fm.HYBRID_MODEL_KEY_3T = ma.HYBRID_MODEL_KEY_3T
  AND fm.mtrl_num             = ma.mtrl_num
 ;

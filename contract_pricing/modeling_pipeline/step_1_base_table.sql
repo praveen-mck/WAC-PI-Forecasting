@@ -1,4 +1,4 @@
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_modeling_base_v10 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_modeling_base_v16 AS
 
 -- ============================================================
 -- COVERAGE CTEs
@@ -8,14 +8,14 @@ CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_modelin
 -- ============================================================
 WITH src AS (
     SELECT *
-    FROM uspd_analytics_den.analytics_gold.vw_q_contract_price_base_v9
+    FROM uspd_analytics_den.analytics_gold.vw_q_contract_price_base_v16
     WHERE YEAR_MONTH IS NOT NULL
       AND MTRL_NUM IS NOT NULL
       AND TRIM(MTRL_NUM) <> ''
       AND TOTAL_SLS_QTY IS NOT NULL
-      AND TOTAL_SLS_QTY >= 0
+      AND TOTAL_SLS_QTY > 0
       AND TOTAL_ZOMBIE_SALES < 1
-      AND WAC_SPREAD_FLAG = 'VALID'
+      AND 340B_WAC_SPREAD_FLAG = 'VALID'
     --   AND UNIT_BILL_UOM = 'EA'
 ),
 
@@ -105,6 +105,9 @@ normalized AS (
         s.MTRL_NME_NVGTON,
 
         s.NDC_NUM AS ndc_num,
+        s.WAC,
+        s.TOTAL_NET_REVENUE,
+        s.BRAND_NAME,
 
         s.PRODUCT_FAMILY,
         s.THERAPEUTIC_CLASS,
@@ -114,7 +117,7 @@ normalized AS (
         s.TOTAL_NET_COS,
         s.TOTAL_SLS_QTY,
         s.WAC_WEIGHTED,
-        s.UNIT_BILL_UOM,
+        -- s.UNIT_BILL_UOM,
 
         -- resolved product group
         CASE
@@ -149,22 +152,22 @@ normalized AS (
             ELSE 'UNKNOWN'
         END AS final_product_group_level,
 
-        -- original customer group key retained for backward compatibility
-        CONCAT_WS('|',
-            s.MANUFACTURER_ID,
-            s.NATIONAL_GRP_ID,
-            s.CUST_SEGMENT,
-            s.ACCT_CLASSIFICATION,
-            s.CUST_PROD_CATEGORY
-        ) AS customer_group_key_id,
+        -- -- original customer group key retained for backward compatibility
+        -- CONCAT_WS('|',
+        --     s.MANUFACTURER_ID,
+        --     s.NATIONAL_GRP_ID,
+        --     s.CUST_SEGMENT,
+        --     s.ACCT_CLASSIFICATION,
+        --     s.CUST_PROD_CATEGORY
+        -- ) AS customer_group_key_id,
 
-        CONCAT_WS('|',
-            s.MANUFACTURER_NAME,
-            s.NATIONAL_GRP_DESC,
-            s.CUST_SEGMENT,
-            s.ACCT_CLASSIFICATION,
-            s.CUST_PROD_CATEGORY
-        ) AS customer_group_key_desc,
+        -- CONCAT_WS('|',
+        --     s.MANUFACTURER_NAME,
+        --     s.NATIONAL_GRP_DESC,
+        --     s.CUST_SEGMENT,
+        --     s.ACCT_CLASSIFICATION,
+        --     s.CUST_PROD_CATEGORY
+        -- ) AS customer_group_key_desc,
 
         -- --------------------------------------------------------
         -- THREE-TIER HYBRID KEY COMPONENTS
@@ -288,9 +291,9 @@ agg AS (
         n.NATIONAL_GRP_ID,
         n.NATIONAL_GRP_DESC,
 
-        n.customer_group_key_id,
-        n.customer_group_key_desc,
-        n.UNIT_BILL_UOM,
+        -- n.customer_group_key_id,
+        -- n.customer_group_key_desc,
+        -- n.UNIT_BILL_UOM,
 
         n.MTRL_NUM,
         MAX(n.MTRL_NME_NVGTON)                  AS MTRL_NME_NVGTON,
@@ -305,6 +308,7 @@ agg AS (
 
         -- Customer hierarchy description fields
         MAX(n.CUST_NAME)                        AS CUST_NAME,
+        MAX(n.BRAND_NAME)                       AS BRAND_NAME,
         MAX(n.COMMON_GRP_ID)                    AS COMMON_GRP_ID,
         MAX(n.COMMON_GRP_DESC)                  AS COMMON_GRP_DESC,
         MAX(n.CHAIN_ID)                         AS CHAIN_ID,
@@ -325,11 +329,13 @@ agg AS (
         MAX(n.sap_key_desc)                     AS sap_key_desc,
         MAX(n.l2_key_desc)                      AS l2_key_desc,
         MAX(n.nat_key_desc)                     AS nat_key_desc,
+        MAX(n.WAC)                              AS WAC,
 
         COUNT(*)                                AS contributing_rows,
 
         SUM(n.TOTAL_NET_COS)                    AS TOTAL_NET_COS,
         SUM(n.TOTAL_SLS_QTY)                    AS TOTAL_SLS_QTY,
+        sum(n.TOTAL_NET_REVENUE)                AS TOTAL_NET_REVENUE,
 
         SUM(n.TOTAL_NET_COS)
             / NULLIF(SUM(n.TOTAL_SLS_QTY), 0)   AS contract_price,
@@ -358,6 +364,9 @@ agg AS (
             0)
         ) - 1                                   AS wac_spread
 
+
+
+
     FROM normalized n
     GROUP BY
         n.cal_month_start_dt,
@@ -368,9 +377,9 @@ agg AS (
         n.CUST_PROD_CATEGORY,
         n.NATIONAL_GRP_ID,
         n.NATIONAL_GRP_DESC,
-        n.UNIT_BILL_UOM,
-        n.customer_group_key_id,
-        n.customer_group_key_desc,
+        -- n.UNIT_BILL_UOM,
+        -- n.customer_group_key_id,
+        -- n.customer_group_key_desc,
         n.MTRL_NUM,
         n.sap_cust_num_trim
 ),
@@ -441,16 +450,35 @@ flagged AS (
             ELSE 0
         END AS contract_price_above_wac_flag,
 
+        
+
+        -- --------------------------------------------------------
+        -- MASTER EXCLUSION FLAG
+        -- Order of WHEN clauses is significant:
+        --   1. Hard data-quality failures (NULL, zero qty, tiny NCOS)
+        --   2. 340B / WAC channel short-circuit — bypass all WAC checks
+        --   3. WAC-relative bounds (ceiling 150%, floor 2%)
+        --   4. Tighter above-WAC check for non-exempt channels (105%)
+        -- --------------------------------------------------------
         CASE
-            WHEN contract_price IS NULL THEN 1
-            WHEN TOTAL_SLS_QTY = 0 THEN 1
-            WHEN ABS(TOTAL_NET_COS) < 1 THEN 1
-            WHEN TOTAL_SLS_QTY < 3 THEN 1
-            WHEN contract_price < 0 THEN 1
+            WHEN contract_price IS NULL                             THEN 1  -- no price
+            WHEN TOTAL_SLS_QTY = 0                                 THEN 1  -- zero qty
+            WHEN ABS(TOTAL_NET_COS) < 1                            THEN 1  -- tiny NCOS
+            -- WHEN TOTAL_SLS_QTY < 2                                 THEN 1  -- thin volume
+            WHEN contract_price < 0                                THEN 1  -- negative price
+            -- 340B and WAC channels: legitimate near-zero or above-WAC pricing; bypass WAC checks
             WHEN acct_classification IN ('WAC', '340B-CP', '340B-CE') THEN 0
+            -- WAC-relative bounds (only applied when WAC is populated)
             WHEN wac_weighted IS NOT NULL
              AND wac_weighted > 0
-             AND contract_price > wac_weighted * 1.05 THEN 1
+             AND contract_price > wac_weighted * 1.50               THEN 1  -- above 150% WAC: billing error
+            WHEN wac_weighted IS NOT NULL
+             AND wac_weighted > 0
+             AND contract_price < wac_weighted * 0.01               THEN 1  -- below 2% WAC: near-zero artifact
+            -- Tighter above-WAC check for standard commercial rows
+            WHEN wac_weighted IS NOT NULL
+             AND wac_weighted > 0
+             AND contract_price > wac_weighted * 1.05               THEN 1  -- above 105% WAC: suspicious
             ELSE 0
         END AS exclude_from_training_flag
 
@@ -503,7 +531,7 @@ outlier_flagged AS (
             WHEN stddev_contract_price IS NULL THEN 0
             WHEN stddev_contract_price = 0 THEN 0
             WHEN ABS(contract_price - median_contract_price)
-                 > 4 * stddev_contract_price THEN 1
+                 > 2 * stddev_contract_price THEN 1
             ELSE 0
         END AS contract_price_outlier_flag,
 
@@ -521,6 +549,128 @@ outlier_flagged AS (
         END AS include_in_avg_contract_price_flag
 
     FROM series_stats s
+),
+
+-- --------------------------------------------------------
+-- MoM price movement flags
+-- --------------------------------------------------------
+mom_flags AS (
+    SELECT
+        o.*,
+
+        -- Previous month contract price within the same series + material
+        LAG(contract_price) OVER (
+            PARTITION BY HYBRID_MODEL_KEY_3T, MTRL_NUM
+            ORDER BY cal_month_start_dt
+        ) AS prev_month_contract_price,
+
+        -- Previous month WAC within the same series + material
+        LAG(wac_weighted) OVER (
+            PARTITION BY HYBRID_MODEL_KEY_3T, MTRL_NUM
+            ORDER BY cal_month_start_dt
+        ) AS prev_month_wac_weighted,
+
+        -- Contract price MoM % change
+        (contract_price - LAG(contract_price) OVER (
+            PARTITION BY HYBRID_MODEL_KEY_3T, MTRL_NUM
+            ORDER BY cal_month_start_dt
+        )) / NULLIF(LAG(contract_price) OVER (
+            PARTITION BY HYBRID_MODEL_KEY_3T, MTRL_NUM
+            ORDER BY cal_month_start_dt
+        ), 0) AS contract_price_mom_pct_change,
+
+        -- Flag: contract price dropped >= 30% MoM
+        CASE
+            WHEN LAG(contract_price) OVER (
+                    PARTITION BY HYBRID_MODEL_KEY_3T, MTRL_NUM
+                    ORDER BY cal_month_start_dt
+                 ) IS NULL
+                THEN NULL  -- no prior month to compare
+            WHEN (contract_price - LAG(contract_price) OVER (
+                    PARTITION BY HYBRID_MODEL_KEY_3T, MTRL_NUM
+                    ORDER BY cal_month_start_dt
+                 )) / NULLIF(LAG(contract_price) OVER (
+                    PARTITION BY HYBRID_MODEL_KEY_3T, MTRL_NUM
+                    ORDER BY cal_month_start_dt
+                 ), 0) <= -0.30
+                THEN 1
+            ELSE 0
+        END AS contract_price_drop_30pct_flag,
+
+        -- Flag: contract price increased >= 30% MoM
+        CASE
+            WHEN LAG(contract_price) OVER (
+                    PARTITION BY HYBRID_MODEL_KEY_3T, MTRL_NUM
+                    ORDER BY cal_month_start_dt
+                 ) IS NULL
+                THEN NULL  -- no prior month to compare
+            WHEN (contract_price - LAG(contract_price) OVER (
+                    PARTITION BY HYBRID_MODEL_KEY_3T, MTRL_NUM
+                    ORDER BY cal_month_start_dt
+                 )) / NULLIF(LAG(contract_price) OVER (
+                    PARTITION BY HYBRID_MODEL_KEY_3T, MTRL_NUM
+                    ORDER BY cal_month_start_dt
+                 ), 0) >= 0.30
+                THEN 1
+            ELSE 0
+        END AS contract_price_inc_30pct_flag,
+
+        -- Direction flag: INCREASE / DECREASE / FLAT / NULL (first month)
+        CASE
+            WHEN LAG(contract_price) OVER (
+                    PARTITION BY HYBRID_MODEL_KEY_3T, MTRL_NUM
+                    ORDER BY cal_month_start_dt
+                 ) IS NULL
+                THEN NULL
+            WHEN contract_price > LAG(contract_price) OVER (
+                    PARTITION BY HYBRID_MODEL_KEY_3T, MTRL_NUM
+                    ORDER BY cal_month_start_dt
+                 )
+                THEN 'INCREASE'
+            WHEN contract_price < LAG(contract_price) OVER (
+                    PARTITION BY HYBRID_MODEL_KEY_3T, MTRL_NUM
+                    ORDER BY cal_month_start_dt
+                 )
+                THEN 'DECREASE'
+            ELSE 'FLAT'
+        END AS contract_price_mom_direction,
+
+        -- WAC MoM decrease flag (any decrease, regardless of magnitude)
+        CASE
+            WHEN LAG(wac_weighted) OVER (
+                    PARTITION BY HYBRID_MODEL_KEY_3T, MTRL_NUM
+                    ORDER BY cal_month_start_dt
+                 ) IS NULL
+                THEN NULL  -- no prior month
+            WHEN wac_weighted < LAG(wac_weighted) OVER (
+                    PARTITION BY HYBRID_MODEL_KEY_3T, MTRL_NUM
+                    ORDER BY cal_month_start_dt
+                 )
+                THEN 1
+            ELSE 0
+        END AS wac_mom_decrease_flag,
+
+        -- WAC MoM % change (useful for backtesting severity analysis)
+        (wac_weighted - LAG(wac_weighted) OVER (
+            PARTITION BY HYBRID_MODEL_KEY_3T, MTRL_NUM
+            ORDER BY cal_month_start_dt
+        )) / NULLIF(LAG(wac_weighted) OVER (
+            PARTITION BY HYBRID_MODEL_KEY_3T, MTRL_NUM
+            ORDER BY cal_month_start_dt
+        ), 0) AS wac_mom_pct_change
+
+    FROM outlier_flagged o
+),
+
+mom_flags_with_wac_drop AS (
+    SELECT
+        *,
+        CASE
+            WHEN wac_mom_pct_change IS NULL        THEN NULL  -- first month, no prior
+            WHEN wac_mom_pct_change <= -0.05       THEN 1
+            ELSE 0
+        END AS wac_5pct_drop_flag
+    FROM mom_flags
 ),
 
 avg_contract_price_by_series AS (
@@ -577,7 +727,7 @@ SELECT
     a.months_used_in_avg_contract_price,
     a.months_excluded_as_contract_price_outliers
 
-FROM outlier_flagged o
+FROM mom_flags_with_wac_drop o
 LEFT JOIN avg_contract_price_by_series a
     ON a.groupby_key = o.groupby_key
    AND a.MTRL_NUM    = o.MTRL_NUM

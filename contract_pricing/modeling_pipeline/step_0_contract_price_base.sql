@@ -1,4 +1,4 @@
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.vw_q_contract_price_base_v9 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.vw_q_contract_price_base_v16 AS
 
 WITH
 /* =========================================================
@@ -16,21 +16,41 @@ base_material_key AS (
 ),
 
 /* =========================================================
-Material master
+Material master — FIXED: added ROW_NUMBER() deduplication
 ========================================================= */
 mtrl AS (
     SELECT
-        LPAD(
-            COALESCE(NULLIF(REGEXP_REPLACE(CAST(MATERIAL AS STRING), '^0+', ''), ''), '0'),
-            18,
-            '0'
-        ) AS MTRL_NUM_STD,
+        MTRL_NUM_STD,
         MTRL_NME_NVGTON,
         THRPTC_CLSS_CDE,
         BYNG_DESC,
         NULLIF(TRIM(CAST(THRPTC_CLSS_CDE AS STRING)), '') AS THRPTC_CLSS_CDE_CLEAN
-    FROM fdp_prod.psas_fdp_all_gold.vw_q_material_pharma_bw
-    WHERE CURR_FLG = 'Y'
+    FROM (
+        SELECT
+            LPAD(
+                COALESCE(NULLIF(REGEXP_REPLACE(CAST(MATERIAL AS STRING), '^0+', ''), ''), '0'),
+                18,
+                '0'
+            ) AS MTRL_NUM_STD,
+            MTRL_NME_NVGTON,
+            THRPTC_CLSS_CDE,
+            BYNG_DESC,
+            ROW_NUMBER() OVER (
+                PARTITION BY
+                    LPAD(
+                        COALESCE(NULLIF(REGEXP_REPLACE(CAST(MATERIAL AS STRING), '^0+', ''), ''), '0'),
+                        18,
+                        '0'
+                    )
+                ORDER BY
+                    CASE WHEN MTRL_NME_NVGTON IS NOT NULL AND TRIM(MTRL_NME_NVGTON) <> '' THEN 0 ELSE 1 END,
+                    CASE WHEN THRPTC_CLSS_CDE IS NOT NULL AND TRIM(THRPTC_CLSS_CDE) <> '' THEN 0 ELSE 1 END,
+                    MATERIAL
+            ) AS rn
+        FROM fdp_prod.psas_fdp_all_gold.vw_q_material_pharma_bw
+        WHERE CURR_FLG = 'Y'
+    ) x
+    WHERE rn = 1
 ),
 
 /* =========================================================
@@ -93,7 +113,6 @@ item_curr AS (
         WHERE ITEM_ACTIVITY_CD = 'A'
     ) x
     WHERE rn = 1
-   
 ),
 
 /* =========================================================
@@ -248,8 +267,6 @@ base_layer AS (
             ELSE 0
         END AS ZOMBIE_SALE_FLAG,
 
-
-
         /* BILL TYPE */
         'Invoice' AS BILL_TYPE,
 
@@ -277,6 +294,7 @@ base_layer AS (
             WHEN t.MTRL_GRP2_CD IN ('S1', 'S3', 'S4', 'S5', 'S6') THEN 'APOLLO'
             ELSE 'BX'
         END AS CUST_PROD_CATEGORY,
+        ndc.BRND_NAM AS BRAND_NAME,
 
         /* PRODUCT FAMILY */
         COALESCE(
@@ -312,7 +330,8 @@ base_layer AS (
         t.NET_COS,
         t.UNIT_BILL_UOM,
         t.SLS_QTY_BEX,
-        t.WAC
+        t.WAC,
+        t.NET_REVENUE
 
     FROM base_material_key t
 
@@ -344,16 +363,17 @@ base_layer AS (
         AND t.CMPNY_CD IN ('8000','8545')
         AND t.BUS_TYPE_CD NOT IN ('18', '19', '20')
         AND t.SLS_QTY_BEX > 0
+        AND t.SLS_QTY_BEX IS NOT NULL
         AND t.BILL_TYPE_CD IN ('ZPD1','ZPD5','ZPDS','ZPF2','ZPS1','ZPS3','ZPS6','ZPS7')
 ),
 
 /* =========================================================
-Aggregation WITH group keys
+Aggregation
 ========================================================= */
 agg AS (
     SELECT
         YEAR_MONTH,
-        MTRL_NUM,
+        LTRIM(0, MTRL_NUM) AS MTRL_NUM,
         MTRL_NME_NVGTON,
         sap_cust_num,
         sap_cust_num_trim,
@@ -378,74 +398,36 @@ agg AS (
         BILL_TYPE,
         CUST_PROD_CATEGORY,
         PRODUCT_FAMILY,
+        BRAND_NAME,
         THERAPEUTIC_CLASS,
         CONTRACT_TYPE,
-        UNIT_BILL_UOM,
-
-        /* NATIONAL GROUP + L2 explicit keys */
-        CONCAT_WS('|',
-            COALESCE(CAST(NATIONAL_GRP_DESC AS STRING), 'UNKNOWN'),
-            COALESCE(CAST(SUBSET_L2_DESC AS STRING), 'UNKNOWN')
-        ) AS NATL_L2_DESC_KEY,
-
-        CONCAT_WS('|',
-            COALESCE(CAST(NATIONAL_GRP_ID AS STRING), 'UNKNOWN'),
-            COALESCE(CAST(SUBSET_L2_ID AS STRING), 'UNKNOWN')
-        ) AS NATL_L2_ID_KEY,
-
-        /* MODEL GROUP KEYS */
-        CONCAT_WS('|',
-            COALESCE(CAST(CUST_SEGMENT AS STRING), 'NA_CUST_SEG'),
-            COALESCE(CAST(ACCT_CLASSIFICATION AS STRING), 'NA_ACCT_CLASS'),
-            COALESCE(CAST(CUST_PROD_CATEGORY AS STRING), 'NA_CUST_PROD'),
-            COALESCE(CAST(NATIONAL_GRP_DESC AS STRING), 'NA_NAT_GRP'),
-            -- COALESCE(CAST(SUBSET_L2_DESC AS STRING), 'UNKNOWN'),
-            COALESCE(CAST(PRODUCT_FAMILY AS STRING), 'NA_PROD_FAM')
-        ) AS GROUPBYKEY,
-
-        CONCAT_WS('|',
-            COALESCE(CAST(CUST_SEGMENT AS STRING), 'NA_CUST_SEG'),
-            COALESCE(CAST(ACCT_CLASSIFICATION AS STRING), 'NA_ACCT_CLASS'),
-            COALESCE(CAST(CUST_PROD_CATEGORY AS STRING), 'NA_CUST_PROD'),
-            COALESCE(CAST(NATIONAL_GRP_ID AS STRING), 'NA_NG'),
-            -- COALESCE(CAST(SUBSET_L2_ID AS STRING), 'UNKNOWN'),
-            COALESCE(CAST(PRODUCT_FAMILY AS STRING), 'NA_PROD_FAM')
-        ) AS GROUPBYKEYID,
 
         /* PRICE / DOLLAR METRICS */
         SUM(NET_COS) / NULLIF(SUM(SLS_QTY_BEX), 0) AS CONTRACT_PRICE,
         SUM(NET_COS) AS TOTAL_NET_COS,
         SUM(SLS_QTY_BEX) AS TOTAL_SLS_QTY,
+        SUM(NET_REVENUE) AS TOTAL_NET_REVENUE,
+        MAX(WAC) AS WAC,
+        
 
-        /* Quantity-weighted WAC */
-        -- SUM(WAC * SLS_QTY_BEX) / NULLIF(SUM(SLS_QTY_BEX), 0) AS WAC_WEIGHTED,
-
-        /* WAC spread */
-        -- (SUM(NET_COS) / NULLIF(SUM(WAC * SLS_QTY_BEX), 0)) - 1 AS WAC_SPREAD,
-
-        -- FIXED (WAC in source = total transaction WAC, so SUM(WAC)/SUM(QTY)
-        -- gives the correct per-unit weighted average list price)
         SUM(CASE WHEN WAC IS NOT NULL AND SLS_QTY_BEX > 0
                 THEN WAC END)
             / NULLIF(SUM(CASE WHEN WAC IS NOT NULL AND SLS_QTY_BEX > 0
-                            THEN SLS_QTY_BEX END), 0)                 AS WAC_WEIGHTED,
+                            THEN SLS_QTY_BEX END), 0) AS WAC_WEIGHTED,
 
         (SUM(NET_COS) / NULLIF(SUM(
             CASE WHEN WAC IS NOT NULL AND SLS_QTY_BEX > 0
                 THEN WAC END
-        ), 0)) - 1                                                      AS WAC_SPREAD,
+        ), 0)) - 1 AS WAC_SPREAD,
 
-        /* Existing zombie sale count */
         SUM(ZOMBIE_SALE_FLAG) AS TOTAL_ZOMBIE_SALES,
 
-        /* Invalid 340B flag */
         CASE 
             WHEN account_class_cd IN ('004','005')
                  AND ((SUM(NET_COS) / NULLIF(SUM(WAC * SLS_QTY_BEX), 0)) - 1) < -0.231
             THEN 'INVALID_340B'
             ELSE 'VALID'
-        END AS WAC_SPREAD_FLAG
-
+        END AS 340B_WAC_SPREAD_FLAG
 
     FROM base_layer
     WHERE CUST_SEGMENT <> 'INTERCO'
@@ -457,4 +439,4 @@ Final filter
 ========================================================= */
 SELECT *
 FROM agg
-WHERE CONTRACT_PRICE >= 0;
+WHERE CONTRACT_PRICE > 0;
