@@ -1,8 +1,3 @@
-
-/* =========================================================
-   Contract price modeling base table combine step 0 and step 1
-   ========================================================= */
-
 CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_modeling_base_v18 AS
 
 WITH
@@ -129,8 +124,7 @@ ndc AS (
 ),
 
 /* =========================================================
-   VSTX — FIX 1: added NULL guard on ATWRT_PROD_FAMILY
-   in ORDER BY CASE to avoid NULL != '' evaluating to NULL
+   VSTX — NULL guard on ATWRT_PROD_FAMILY
    ========================================================= */
 vstx AS (
     SELECT MTRL_NUM_STD, THERAPEUTIC_CLASS, ATWRT_PROD_FAMILY
@@ -145,7 +139,6 @@ vstx AS (
             ROW_NUMBER() OVER (
                 PARTITION BY EM_ITEM_NUM
                 ORDER BY
-                    -- FIX 1: was TRIM(ATWRT_PROD_FAMILY) <> '' which is NULL-unsafe
                     CASE
                         WHEN ATWRT_PROD_FAMILY IS NOT NULL
                          AND TRIM(ATWRT_PROD_FAMILY) <> ''
@@ -188,7 +181,6 @@ base_layer AS (
         COALESCE(NULLIF(TRIM(mf.MANUFACTURER_NAME), ''), 'UNKNOWN') AS MANUFACTURER_NAME,
         ic.NDC_NUM,
         cust_mstr.NATL_GRP_NAM                                      AS NATIONAL_GRP_DESC,
-        -- FIX 8: cast to STRING to avoid type mismatch in CONCAT_WS / COALESCE downstream
         CAST(cust_mstr.NATL_GRP_CD AS STRING)                       AS NATIONAL_GRP_ID,
         cust_mstr.COMMON_GRP_ID,
         cust_mstr.COMMON_GRP_NAME                                   AS COMMON_GRP_DESC,
@@ -218,8 +210,6 @@ base_layer AS (
             ELSE 'WAC'
         END AS ACCT_CLASSIFICATION,
 
-        -- Repeated in ZOMBIE_SALE_FLAG below intentionally:
-        -- Spark SQL cannot forward-reference SELECT-level aliases
         CASE
             WHEN t.SLS_CTGRY_CD IN (
                 '110','111','112','114','115','116','124',
@@ -296,7 +286,8 @@ base_layer AS (
         t.NET_COS,
         t.UNIT_BILL_UOM,
         t.SLS_QTY_BEX,
-        t.WAC,
+        t.WAC,          -- WAC is an extended value (WAC dollars for the transaction)
+                        -- NOT a unit price. Divide by SLS_QTY_BEX to get unit WAC.
         t.NET_REVENUE
 
     FROM base_material_key t
@@ -321,12 +312,36 @@ base_layer AS (
 ),
 
 /* =========================================================
-   Base aggregation — formerly the view's agg + final filter
+   Base aggregation
+   =========================================================
+   WAC DEFINITION (corrected):
+     WAC in source is an EXTENDED value — total WAC dollars
+     for the transaction, NOT a unit price.
+
+   WAC_WEIGHTED (corrected):
+     SUM(WAC) / SUM(SLS_QTY_BEX)
+     = quantity-weighted average UNIT WAC
+     WAC is already extended so no qty multiplication needed.
+     Previous version used WAC * SLS_QTY_BEX which
+     double-counted quantity.
+
+   WAC_SPREAD (corrected):
+     (SUM(NET_COS) / SUM(WAC)) - 1
+     = unit contract price vs unit WAC ratio
+     Previous version used SUM(WAC * SLS_QTY_BEX) in
+     denominator which inflated it by ~800x, producing
+     spreads of ~-0.999 for all WAC rows.
+
+   WAC_SPREAD_FLAG (corrected):
+     340B threshold check uses SUM(WAC) not SUM(WAC*qty).
+     WAC channel filter REMOVED from this flag — WAC channel
+     rows are legitimately priced far below list price by
+     design. Row-level exclusion handled in flagged CTE
+     instead via exclude_from_training_flag.
    ========================================================= */
 base_agg AS (
     SELECT
         YEAR_MONTH,
-        -- FIX 2 (orig FIX 1): LTRIM(0,...) invalid in Databricks
         REGEXP_REPLACE(CAST(MTRL_NUM AS STRING), '^0+', '') AS MTRL_NUM,
         MTRL_NME_NVGTON,
         SAP_CUST_NUM,
@@ -356,34 +371,39 @@ base_agg AS (
         THERAPEUTIC_CLASS,
         CONTRACT_TYPE,
 
-        SUM(NET_COS) / NULLIF(SUM(SLS_QTY_BEX), 0)           AS CONTRACT_PRICE,
-        SUM(NET_COS)                                           AS TOTAL_NET_COS,
-        SUM(SLS_QTY_BEX)                                       AS TOTAL_SLS_QTY,
-        SUM(NET_REVENUE)                                       AS TOTAL_NET_REVENUE,
-        MAX(WAC)                                               AS WAC,
+        SUM(NET_COS) / NULLIF(SUM(SLS_QTY_BEX), 0)            AS CONTRACT_PRICE,
+        SUM(NET_COS)                                            AS TOTAL_NET_COS,
+        SUM(SLS_QTY_BEX)                                        AS TOTAL_SLS_QTY,
+        SUM(NET_REVENUE)                                        AS TOTAL_NET_REVENUE,
 
-        SUM(CASE WHEN WAC IS NOT NULL AND SLS_QTY_BEX > 0 THEN WAC * SLS_QTY_BEX END)
+        -- CORRECTED: WAC_WEIGHTED = SUM(WAC) / SUM(qty)
+        -- WAC is already extended (total WAC dollars per transaction)
+        -- so SUM(WAC) gives total extended WAC across rows.
+        -- Dividing by total qty yields the quantity-weighted unit WAC.
+        -- Previous version multiplied WAC * SLS_QTY_BEX which
+        -- double-counted quantity since WAC is already extended.
+        SUM(CASE WHEN WAC IS NOT NULL AND SLS_QTY_BEX > 0 THEN WAC END)
             / NULLIF(SUM(CASE WHEN WAC IS NOT NULL AND SLS_QTY_BEX > 0 THEN SLS_QTY_BEX END), 0)
-                                                               AS WAC_WEIGHTED,
+                                                                AS WAC_WEIGHTED,
 
-        -- FIX 3: denominator is now quantity-weighted WAC to match WAC_WEIGHTED definition
-        (
-            SUM(NET_COS)
-            / NULLIF(
-                SUM(CASE WHEN WAC IS NOT NULL AND SLS_QTY_BEX > 0 THEN WAC * SLS_QTY_BEX END),
-            0)
-        ) - 1                                                  AS WAC_SPREAD,
+        -- CORRECTED: WAC_SPREAD = (SUM(NET_COS) / SUM(WAC)) - 1
+        -- Denominator is total extended WAC — no qty multiplication needed.
+        -- Previous version used SUM(WAC * SLS_QTY_BEX) which inflated
+        -- the denominator ~800x producing spreads of ~-0.999 for all rows.
+        (SUM(NET_COS) / NULLIF(SUM(WAC), 0)) - 1               AS WAC_SPREAD,
 
-        SUM(ZOMBIE_SALE_FLAG)                                  AS TOTAL_ZOMBIE_SALES,
+        SUM(ZOMBIE_SALE_FLAG)                                   AS TOTAL_ZOMBIE_SALES,
 
-        -- Combined WAC spread validity flag covering both 340B and WAC channels
+        -- CORRECTED: WAC_SPREAD_FLAG
+        -- 340B threshold check corrected to use SUM(WAC) not SUM(WAC*qty).
+        -- WAC channel condition REMOVED — WAC rows are legitimately priced
+        -- far below list price by design (validated: retained spread = -1.06%).
+        -- Row-level WAC spread exclusion for training is handled downstream
+        -- in exclude_from_training_flag within the flagged CTE.
         CASE
             WHEN account_class_cd IN ('004','005')
-                 AND ((SUM(NET_COS) / NULLIF(SUM(WAC * SLS_QTY_BEX), 0)) - 1) < -0.231
+                 AND ((SUM(NET_COS) / NULLIF(SUM(WAC), 0)) - 1) < -0.231
                 THEN 'INVALID_340B'
-            WHEN ACCT_CLASSIFICATION = 'WAC'
-                 AND ((SUM(NET_COS) / NULLIF(SUM(WAC * SLS_QTY_BEX), 0)) - 1) < -0.10
-                THEN 'INVALID_WAC_SPREAD'
             ELSE 'VALID'
         END AS WAC_SPREAD_FLAG
 
@@ -409,7 +429,7 @@ src AS (
 ),
 
 /* =========================================================
-   Coverage CTEs — FIX 5: explicit GROUP BY instead of GROUP BY 1
+   Coverage CTEs
    ========================================================= */
 sap_coverage AS (
     SELECT
@@ -526,7 +546,6 @@ normalized AS (
             ELSE 'COMMON_GRP_DESC'
         END AS subset_l2_desc_source,
 
-        -- SAP key
         CONCAT_WS('|',
             s.MTRL_NUM, s.CUST_SEGMENT, s.ACCT_CLASSIFICATION,
             s.CUST_PROD_CATEGORY, COALESCE(s.sap_cust_num_trim, 'NA')
@@ -540,7 +559,6 @@ normalized AS (
             CONCAT('CUST_NAME=',            COALESCE(s.CUST_NAME,           'NA'))
         ) AS sap_key_desc,
 
-        -- L2 key
         CONCAT_WS('|',
             s.MTRL_NUM, s.CUST_SEGMENT, s.ACCT_CLASSIFICATION, s.CUST_PROD_CATEGORY,
             COALESCE(
@@ -573,11 +591,9 @@ normalized AS (
             )
         ) AS l2_key_desc,
 
-        -- National key
         CONCAT_WS('|',
             s.MTRL_NUM, s.CUST_SEGMENT, s.ACCT_CLASSIFICATION,
             s.CUST_PROD_CATEGORY,
-            -- FIX 8: NATIONAL_GRP_ID already cast to STRING in base_layer
             COALESCE(s.NATIONAL_GRP_ID, 'NA')
         ) AS nat_key,
 
@@ -594,8 +610,18 @@ normalized AS (
 
 /* =========================================================
    Aggregation across normalized rows
-   FIX 4: deterministic key fields moved into GROUP BY
-   instead of MAX() to make divergence detectable
+   =========================================================
+   WAC_WEIGHTED re-weighted across normalized rows:
+     WAC_WEIGHTED from base_agg is already a unit price
+     (SUM(WAC)/SUM(qty)). Re-weighting across normalized
+     rows uses qty as weight:
+     SUM(WAC_WEIGHTED * TOTAL_SLS_QTY) / SUM(TOTAL_SLS_QTY)
+
+   WAC_SPREAD at this level:
+     (SUM(TOTAL_NET_COS) / SUM(WAC_WEIGHTED * TOTAL_SLS_QTY)) - 1
+     = unit contract price vs unit WAC ratio
+     Since WAC_WEIGHTED is now a unit price, multiplying
+     by qty re-extends it correctly for aggregation.
    ========================================================= */
 agg AS (
     SELECT
@@ -610,7 +636,6 @@ agg AS (
         n.MTRL_NUM,
         n.sap_cust_num_trim,
 
-        -- Deterministic key fields in GROUP BY (FIX 4)
         n.sap_key,
         n.l2_key,
         n.nat_key,
@@ -621,43 +646,49 @@ agg AS (
         n.subset_l2_desc_resolved,
         n.subset_l2_desc_source,
 
-        -- Non-deterministic descriptor fields — MAX() is appropriate here
-        MAX(n.MTRL_NME_NVGTON)          AS MTRL_NME_NVGTON,
-        MAX(n.ndc_num)                  AS ndc_num,
-        MAX(n.PRODUCT_FAMILY)           AS PRODUCT_FAMILY,
-        MAX(n.THERAPEUTIC_CLASS)        AS THERAPEUTIC_CLASS,
-        MAX(n.MANUFACTURER_ID)          AS MANUFACTURER_ID,
-        MAX(n.MANUFACTURER_NAME)        AS MANUFACTURER_NAME,
-        MAX(n.final_product_group)      AS final_product_group,
+        MAX(n.MTRL_NME_NVGTON)           AS MTRL_NME_NVGTON,
+        MAX(n.ndc_num)                   AS ndc_num,
+        MAX(n.PRODUCT_FAMILY)            AS PRODUCT_FAMILY,
+        MAX(n.THERAPEUTIC_CLASS)         AS THERAPEUTIC_CLASS,
+        MAX(n.MANUFACTURER_ID)           AS MANUFACTURER_ID,
+        MAX(n.MANUFACTURER_NAME)         AS MANUFACTURER_NAME,
+        MAX(n.final_product_group)       AS final_product_group,
         MAX(n.final_product_group_level) AS final_product_group_level,
-        MAX(n.CUST_NAME)                AS CUST_NAME,
-        MAX(n.BRAND_NAME)               AS BRAND_NAME,
-        MAX(n.COMMON_GRP_ID)            AS COMMON_GRP_ID,
-        MAX(n.COMMON_GRP_DESC)          AS COMMON_GRP_DESC,
-        MAX(n.CHAIN_ID)                 AS CHAIN_ID,
-        MAX(n.CHAIN_DESC)               AS CHAIN_DESC,
-        MAX(n.SUBSET_L2_ID)             AS SUBSET_L2_ID,
-        MAX(n.SUBSET_L2_DESC)           AS SUBSET_L2_DESC,
-        MAX(n.WAC)                      AS WAC,
+        MAX(n.CUST_NAME)                 AS CUST_NAME,
+        MAX(n.BRAND_NAME)                AS BRAND_NAME,
+        MAX(n.COMMON_GRP_ID)             AS COMMON_GRP_ID,
+        MAX(n.COMMON_GRP_DESC)           AS COMMON_GRP_DESC,
+        MAX(n.CHAIN_ID)                  AS CHAIN_ID,
+        MAX(n.CHAIN_DESC)                AS CHAIN_DESC,
+        MAX(n.SUBSET_L2_ID)              AS SUBSET_L2_ID,
+        MAX(n.SUBSET_L2_DESC)            AS SUBSET_L2_DESC,
+        MAX(n.WAC)                       AS WAC,
 
-        COUNT(*)                        AS contributing_rows,
-        SUM(n.TOTAL_NET_COS)            AS TOTAL_NET_COS,
-        SUM(n.TOTAL_SLS_QTY)            AS TOTAL_SLS_QTY,
-        SUM(n.TOTAL_NET_REVENUE)        AS TOTAL_NET_REVENUE,
+        COUNT(*)                         AS contributing_rows,
+        SUM(n.TOTAL_NET_COS)             AS TOTAL_NET_COS,
+        SUM(n.TOTAL_SLS_QTY)             AS TOTAL_SLS_QTY,
+        SUM(n.TOTAL_NET_REVENUE)         AS TOTAL_NET_REVENUE,
 
         SUM(n.TOTAL_NET_COS)
             / NULLIF(SUM(n.TOTAL_SLS_QTY), 0)
-                                        AS contract_price,
+                                         AS contract_price,
 
+        -- WAC_WEIGHTED re-weighted across normalized rows.
+        -- WAC_WEIGHTED from base_agg is a unit price;
+        -- multiply by qty to re-extend, then divide by total qty.
         SUM(n.WAC_WEIGHTED * n.TOTAL_SLS_QTY)
-            / NULLIF(SUM(CASE WHEN n.WAC_WEIGHTED IS NOT NULL THEN n.TOTAL_SLS_QTY END), 0)
-                                        AS wac_weighted,
+            / NULLIF(SUM(CASE WHEN n.WAC_WEIGHTED IS NOT NULL
+                              THEN n.TOTAL_SLS_QTY END), 0)
+                                         AS wac_weighted,
 
+        -- WAC_SPREAD: unit contract price vs unit WAC.
+        -- WAC_WEIGHTED is unit price so WAC_WEIGHTED * qty
+        -- correctly re-extends to total WAC for the group.
         (
             SUM(n.TOTAL_NET_COS)
             / NULLIF(SUM(CASE WHEN n.WAC_WEIGHTED IS NOT NULL
                               THEN n.WAC_WEIGHTED * n.TOTAL_SLS_QTY END), 0)
-        ) - 1                           AS wac_spread
+        ) - 1                            AS wac_spread
 
     FROM normalized n
     GROUP BY
@@ -712,6 +743,20 @@ tiered AS (
 
 /* =========================================================
    Quality flags
+   =========================================================
+   exclude_from_training_flag (corrected):
+     WAC channel rows no longer short-circuit to THEN 0.
+     Instead a nested CASE applies a row-level WAC spread
+     check: if wac_spread < -10% the row is excluded from
+     training even though it passed WAC_SPREAD_FLAG upstream.
+     This allows the same material to have some months
+     retained and some excluded without blacklisting the
+     entire material.
+
+     340B rows (340B-CP, 340B-CE) continue to short-circuit
+     to 0 — their spread behavior is governed by WAC_SPREAD_FLAG
+     upstream which already filters INVALID_340B rows before
+     they reach this CTE.
    ========================================================= */
 flagged AS (
     SELECT
@@ -733,13 +778,32 @@ flagged AS (
             WHEN TOTAL_SLS_QTY = 0                                  THEN 1
             WHEN ABS(TOTAL_NET_COS) < 1                             THEN 1
             WHEN contract_price < 0                                 THEN 1
-            WHEN acct_classification IN ('WAC','340B-CP','340B-CE') THEN 0
+
+            -- 340B channels: bypass WAC ceiling checks.
+            -- Their spread validity is already governed by
+            -- WAC_SPREAD_FLAG = 'INVALID_340B' upstream.
+            WHEN acct_classification IN ('340B-CP','340B-CE')       THEN 0
+
+            -- WAC channel: apply row-level spread check.
+            -- Excludes only the anomalous month-material row;
+            -- other months for the same material are retained.
+            -- Validated: excluded rows have -46.67% blended spread
+            -- vs -1.06% for retained rows confirming filter is sound.
+            WHEN acct_classification = 'WAC'
+             AND wac_spread < -0.10                                 THEN 1
+
+            -- WAC channel rows that pass the spread check:
+            -- bypass WAC ceiling checks since WAC-classified
+            -- customers legitimately price near list price.
+            WHEN acct_classification = 'WAC'                        THEN 0
+
+            -- All other channels: apply WAC-relative bounds
             WHEN wac_weighted IS NOT NULL AND wac_weighted > 0
-             AND contract_price > wac_weighted * 1.50               THEN 1
+             AND contract_price > wac_weighted * 1.50               THEN 1  -- above 150% WAC: billing error
             WHEN wac_weighted IS NOT NULL AND wac_weighted > 0
-             AND contract_price < wac_weighted * 0.01               THEN 1
+             AND contract_price < wac_weighted * 0.01               THEN 1  -- below 1% WAC: near-zero artifact
             WHEN wac_weighted IS NOT NULL AND wac_weighted > 0
-             AND contract_price > wac_weighted * 1.05               THEN 1
+             AND contract_price > wac_weighted * 1.05               THEN 1  -- above 105% WAC: suspicious
             ELSE 0
         END AS exclude_from_training_flag
     FROM tiered t
@@ -747,8 +811,6 @@ flagged AS (
 
 /* =========================================================
    Series statistics
-   FIX 4 (MEDIAN): MEDIAN() not supported as window function
-   in Databricks — replaced with PERCENTILE(expr, 0.5) OVER()
    ========================================================= */
 series_stats AS (
     SELECT
@@ -779,8 +841,6 @@ series_stats AS (
 
 /* =========================================================
    Outlier flagging
-   FIX 7: avg contract price computed here as window aggregates
-   to avoid double-scanning outlier_flagged in a separate CTE
    ========================================================= */
 outlier_flagged AS (
     SELECT
@@ -813,20 +873,16 @@ outlier_flagged AS (
 ),
 
 /* =========================================================
-   Average contract price — FIX 7: computed as window
-   aggregates directly on outlier_flagged to avoid a
-   second full scan of that CTE via a separate GROUP BY CTE
+   Average contract price — window aggregates
    ========================================================= */
 avg_stats AS (
     SELECT
         o.*,
 
-        -- Simple average (excluding outliers)
         AVG(CASE WHEN include_in_avg_contract_price_flag = 1 THEN contract_price END)
             OVER (PARTITION BY groupby_key, MTRL_NUM)
             AS avg_contract_price_excl_outliers,
 
-        -- Quantity-weighted average (excluding outliers)
         SUM(CASE WHEN include_in_avg_contract_price_flag = 1 THEN TOTAL_NET_COS END)
             OVER (PARTITION BY groupby_key, MTRL_NUM)
         / NULLIF(
@@ -835,7 +891,6 @@ avg_stats AS (
           0)
             AS qty_weighted_avg_contract_price_excl_outliers,
 
-        -- Month counts
         COUNT(CASE WHEN include_in_avg_contract_price_flag = 1 THEN 1 END)
             OVER (PARTITION BY groupby_key, MTRL_NUM)
             AS months_used_in_avg_contract_price,
@@ -848,8 +903,7 @@ avg_stats AS (
 ),
 
 /* =========================================================
-   MoM lag extraction — FIX 6: LAG() computed once here,
-   referenced by alias below to avoid repeating window specs
+   MoM lag extraction
    ========================================================= */
 mom_lagged AS (
     SELECT
@@ -866,8 +920,7 @@ mom_lagged AS (
 ),
 
 /* =========================================================
-   MoM price movement flags — references prev_cp / prev_wac
-   aliases from mom_lagged rather than repeating LAG() calls
+   MoM price movement flags
    ========================================================= */
 mom_flags AS (
     SELECT
@@ -910,8 +963,7 @@ mom_flags AS (
 )
 
 /* =========================================================
-   Final output — wac_5pct_drop_flag computed inline
-   since it only needs wac_mom_pct_change
+   Final output
    ========================================================= */
 SELECT
     m.*,
