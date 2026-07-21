@@ -1,4 +1,15 @@
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_forecast_v16 AS
+
+
+-- =========================================================
+-- STEP 7: FORECAST
+-- - Applies forecast_start_contract_price + 0 trend across
+--   all 60 future months
+-- - Joins material assumptions for full descriptor context
+-- - forecast_start_contract_price is the v18 price anchor:
+--     prior 12m avg (>= 6 months) -> latest observed avg (>= 6) -> last price
+-- =========================================================
+
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_forecast_v18 AS
 SELECT
     fm.HYBRID_MODEL_KEY_3T,
     fm.mtrl_num,
@@ -59,7 +70,7 @@ SELECT
     ma.latest_6_observed_start_month,
     ma.latest_6_observed_end_month,
 
-    -- trend = 0 for all series (v16 design)
+    -- trend = 0 for all series (v18 design)
     ma.expected_monthly_trend_pct,
     ma.material_trend_source,
 
@@ -105,8 +116,8 @@ SELECT
         ) * COALESCE(ma.forecast_start_total_sls_qty, 0)
     END                                                 AS forecasted_net_cos
 
-FROM uspd_analytics_den.analytics_gold.contract_price_future_months_v16 fm
-JOIN uspd_analytics_den.analytics_gold.contract_price_material_assumptions_v16 ma
+FROM uspd_analytics_den.analytics_gold.contract_price_future_months_v18 fm
+JOIN uspd_analytics_den.analytics_gold.contract_price_material_assumptions_v18 ma
   ON fm.HYBRID_MODEL_KEY_3T = ma.HYBRID_MODEL_KEY_3T
  AND fm.mtrl_num             = ma.mtrl_num
 ;

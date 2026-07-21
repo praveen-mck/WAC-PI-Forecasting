@@ -1,4 +1,4 @@
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v16 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v18 AS
 
 WITH joined AS (
     SELECT
@@ -52,9 +52,11 @@ WITH joined AS (
         f.trend_source,
         f.forecasted_contract_price,
 
-        f.recent_12m_months,
-        f.prior_12m_months,
-        f.latest_12_observed_months,
+        -- UPDATED: replaced recent_12m_months / prior_12m_months /
+        -- latest_12_observed_months with the 6m columns now output
+        -- by contract_price_bt_forecasted_v18 after the Step 5 fix
+        f.recent_6m_months,
+        f.latest_6_observed_months,
 
         a.contract_price                        AS actual_contract_price,
         a.account_class_cd                      AS account_class_cd,
@@ -65,12 +67,12 @@ WITH joined AS (
 
         -- ▶ price movement flags: COALESCE to 0 so first-month NULLs
         --   (no prior month available) don't propagate into counts/rates
-        COALESCE(a.wac_mom_decrease_flag,        0) AS wac_price_decrease_flag,
-        COALESCE(a.wac_5pct_drop_flag,           0) AS wac_significant_decrease_flag,
+        COALESCE(a.wac_mom_decrease_flag,          0) AS wac_price_decrease_flag,
+        COALESCE(a.wac_5pct_drop_flag,             0) AS wac_significant_decrease_flag,
         COALESCE(a.contract_price_drop_30pct_flag, 0) AS contract_price_drop_30pct_flag,
         COALESCE(a.contract_price_inc_30pct_flag,  0) AS contract_price_inc_30pct_flag
 
-    FROM uspd_analytics_den.analytics_gold.contract_price_bt_forecasted_v16 f
+    FROM uspd_analytics_den.analytics_gold.contract_price_bt_forecasted_v18 f
     LEFT JOIN (
         SELECT
             HYBRID_MODEL_KEY_3T,
@@ -88,7 +90,7 @@ WITH joined AS (
             wac_5pct_drop_flag,
             contract_price_drop_30pct_flag,
             contract_price_inc_30pct_flag
-        FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v16
+        FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v18
         WHERE exclude_from_training_flag = 0
     ) a
       ON f.HYBRID_MODEL_KEY_3T = a.HYBRID_MODEL_KEY_3T
@@ -191,7 +193,7 @@ series_ranked AS (
 -- ▶ top 100 brand names by SUM(WAC) across all rows in the eval table
 top_100_brands AS (
     SELECT brand_name
-    FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v16
+    FROM calc
     GROUP BY brand_name
     ORDER BY SUM(WAC) DESC
     LIMIT 100
@@ -279,10 +281,9 @@ LEFT JOIN top_100_brands t
 
 
 -- =====================================================================
--- SUMMARY: adds wmape alongside existing mape/wape metrics
--- and breaks out pass/fail counts for all four price movement flags
+-- SUMMARY — unchanged
 -- =====================================================================
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_eval_summary_run_v16 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_eval_summary_run_v18 AS
 SELECT
     run_id,
     MODEL_TIER,
@@ -296,48 +297,36 @@ SELECT
     MAX(total_net_revenue)                              AS total_net_revenue,
     MAX(brand_name)                                     AS brand_name,
 
-    -- ── Price-level accuracy ─────────────────────────────────────────
     AVG(ape_contract_price)                             AS mape_contract_price,
     SUM(ae_contract_price)
         / NULLIF(SUM(ABS(actual_contract_price)), 0)    AS wape_contract_price,
-
     SUM(ae_contract_price * actual_sls_qty)
         / NULLIF(SUM(ABS(actual_contract_price) * actual_sls_qty), 0)
                                                         AS wmape_contract_price,
-
     AVG(bias_contract_price)                            AS avg_bias_contract_price,
 
-    -- ── Dollar-level accuracy ────────────────────────────────────────
     AVG(ape_dollars)                                    AS mape_dollars,
     SUM(ae_dollars)
         / NULLIF(SUM(ABS(actual_dollars)), 0)           AS wape_dollars,
-
     SUM(ae_dollars)
         / NULLIF(SUM(ABS(actual_dollars)), 0)           AS wmape_dollars,
-
     AVG(bias_dollars)                                   AS avg_bias_dollars,
 
-    -- ── Pass / fail thresholds ───────────────────────────────────────
     COUNT_IF(pass_flag_vs_actual_error_threshold = 1)   AS pass_cnt_price,
     COUNT_IF(pass_flag_vs_actual_error_threshold = 0)   AS fail_cnt_price,
+    COUNT_IF(pass_flag_vs_materiality_threshold  = 1)   AS pass_cnt_materiality,
+    COUNT_IF(pass_flag_vs_materiality_threshold  = 0)   AS fail_cnt_materiality,
+    COUNT_IF(forecast_explosion_flag             = 1)   AS explosion_row_cnt,
 
-    COUNT_IF(pass_flag_vs_materiality_threshold = 1)    AS pass_cnt_materiality,
-    COUNT_IF(pass_flag_vs_materiality_threshold = 0)    AS fail_cnt_materiality,
+    COUNT_IF(top_100_brand_flag              = 1)       AS top_100_brand_row_cnt,
+    COUNT_IF(pass_flag_vs_top100_threshold   = 1)       AS pass_cnt_top100_threshold,
+    COUNT_IF(pass_flag_vs_top100_threshold   = 0)       AS fail_cnt_top100_threshold,
 
-    COUNT_IF(forecast_explosion_flag = 1)               AS explosion_row_cnt,
-
-    -- ▶ top 100 brand threshold pass/fail counts
-    COUNT_IF(top_100_brand_flag = 1)                    AS top_100_brand_row_cnt,
-    COUNT_IF(pass_flag_vs_top100_threshold = 1)         AS pass_cnt_top100_threshold,
-    COUNT_IF(pass_flag_vs_top100_threshold = 0)         AS fail_cnt_top100_threshold,
-
-    -- ── Price movement flag counts ───────────────────────────────────
     COUNT_IF(wac_price_decrease_flag        = 1)        AS wac_price_decrease_cnt,
     COUNT_IF(wac_significant_decrease_flag  = 1)        AS wac_significant_decrease_cnt,
     COUNT_IF(contract_price_drop_30pct_flag = 1)        AS contract_price_drop_30pct_cnt,
     COUNT_IF(contract_price_inc_30pct_flag  = 1)        AS contract_price_inc_30pct_cnt,
 
-    -- ▶ COALESCE to 0 so rates never return NULL
     COALESCE(COUNT_IF(wac_price_decrease_flag        = 1) / NULLIF(COUNT(*), 0), 0)
                                                         AS wac_price_decrease_rate,
     COALESCE(COUNT_IF(wac_significant_decrease_flag  = 1) / NULLIF(COUNT(*), 0), 0)
@@ -347,13 +336,7 @@ SELECT
     COALESCE(COUNT_IF(contract_price_inc_30pct_flag  = 1) / NULLIF(COUNT(*), 0), 0)
                                                         AS contract_price_inc_30pct_rate
 
-FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v16
-GROUP BY
-    run_id,
-    MODEL_TIER,
-    sparse_price_confidence
-ORDER BY
-    run_id,
-    MODEL_TIER,
-    sparse_price_confidence
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v18
+GROUP BY run_id, MODEL_TIER, sparse_price_confidence
+ORDER BY run_id, MODEL_TIER, sparse_price_confidence
 ;
