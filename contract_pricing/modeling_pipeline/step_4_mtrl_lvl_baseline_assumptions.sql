@@ -1,30 +1,46 @@
 -- =========================================================
--- STEP 4: MATERIAL-LEVEL BASELINE ASSUMPTIONS v19
+-- STEP 4: MATERIAL-LEVEL BASELINE ASSUMPTIONS v20
 --
--- Changes from v18.1:
---   - Source updated to contract_price_training_clean_v19
---   - raw_avg_yoy_trend_pct renamed to avg_yoy_pct throughout
---     for naming consistency across all pipeline steps
---   - Ratio guard relaxed for GX (generics) in all six CASE
---     expressions (forecast_start_contract_price, wac_spread,
---     total_sls_qty, total_net_cos, material_trend_source,
---     forecast_start_price_source):
---       Was: anchor / recent_6m_avg >= 0.15 (all categories)
---       Now: bypass guard entirely for cust_prod_category = 'GX'
---     GX repricing events can move 100-800%; the ratio guard
---     was incorrectly blocking valid recent prices and causing
---     NULL forecast_start_contract_price for 1,598 GX series.
---   - All other logic unchanged from v18.1:
---       AVG_YOY_PROMOTED dampening: (avg_yoy_pct * 0.19) / 4.0
---       G5 recency guard
---       ±2%/qtr cap
+-- Changes from v20:
+--
+--   1. APOLLO → NO_TREND OVERRIDE
+--      Backtest (v14+) showed no trend was better for APOLLO.
+--      AVG_YOY_PROMOTED was overriding that decision for APOLLO
+--      keys with |avg_yoy| > 3%, causing -$13.8B overforecast.
+--      Fix: APOLLO added as a hard override to NO_TREND in
+--      assigned_trend_method, monthly_trend_pct_raw, and
+--      expected_monthly_trend_pct before the sign_only block.
+--
+--   2. BX BASELINE UPPER-BOUND GUARD
+--      208K BX keys had forecast_start_contract_price ~89% above
+--      actual — their recent_6m window captured an inflated price
+--      (contract reset / launch pricing) that then normalized.
+--      G5 did not catch this because anchor_cp ≈ recent_6m_avg
+--      (both elevated together), so anchor/latest_6_obs ≈ 1.0.
+--      Fix: added upper-bound condition to all four baseline CASE
+--      expressions (price, wac_spread, qty, net_cos) and the two
+--      label expressions (material_trend_source,
+--      forecast_start_price_source):
+--        Non-GX keys: recent_6m_avg / anchor <= 1.5
+--        GX exempt: generic price spikes are legitimate
+--      If recent_6m_avg > anchor * 1.5, key falls back to
+--      Tier2 (latest_6_obs) or Tier3 (anchor) instead of
+--      using the inflated recent_6m_avg as the baseline.
+--
+--   Carried forward from v20:
+--   - Source: contract_price_training_clean_v20
+--   - avg_yoy_pct naming (was raw_avg_yoy_trend_pct)
+--   - GX ratio guard bypass (anchor/recent >= 0.15)
+--   - AVG_YOY_PROMOTED dampening: (avg_yoy_pct * 0.19) / 4.0
+--   - G5 recency guard
+--   - ±2%/qtr cap
 -- =========================================================
 
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_material_assumptions_v19 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_material_assumptions_v20 AS
 
 WITH base AS (
     SELECT *
-    FROM uspd_analytics_den.analytics_gold.contract_price_training_clean_v19
+    FROM uspd_analytics_den.analytics_gold.contract_price_training_clean_v20
     WHERE include_for_modeling_flag = 1
 ),
 
@@ -323,8 +339,6 @@ guardrails AS (
             ELSE 0
         END                                             AS g5_recent_price_not_falling,
 
-        WHEN ar.cust_prod_category = 'APOLLO' THEN 'NO_TREND'
-
         CASE
             WHEN COALESCE(td.yoy_pairs_used, 0) < 2
             THEN 0
@@ -490,6 +504,8 @@ SELECT
               OR c.prior_6m_avg_contract_price > c.recent_6m_avg_contract_price * 5)
          AND (ar.cust_prod_category = 'GX'
               OR ar.anchor_contract_price / NULLIF(c.recent_6m_avg_contract_price, 0) >= 0.15)
+         AND (ar.cust_prod_category = 'GX'
+              OR c.recent_6m_avg_contract_price / NULLIF(ar.anchor_contract_price, 0) <= 1.5)
         THEN c.recent_6m_avg_contract_price
         WHEN c.latest_6_observed_months >= 3
         THEN c.latest_6_observed_avg_contract_price
@@ -506,6 +522,8 @@ SELECT
               OR c.prior_6m_avg_contract_price > c.recent_6m_avg_contract_price * 5)
          AND (ar.cust_prod_category = 'GX'
               OR ar.anchor_contract_price / NULLIF(c.recent_6m_avg_contract_price, 0) >= 0.15)
+         AND (ar.cust_prod_category = 'GX'
+              OR c.recent_6m_avg_contract_price / NULLIF(ar.anchor_contract_price, 0) <= 1.5)
         THEN c.recent_6m_avg_wac_spread
         WHEN c.latest_6_observed_months >= 3
         THEN c.latest_6_observed_avg_wac_spread
@@ -520,6 +538,8 @@ SELECT
               OR c.prior_6m_avg_contract_price > c.recent_6m_avg_contract_price * 5)
          AND (ar.cust_prod_category = 'GX'
               OR ar.anchor_contract_price / NULLIF(c.recent_6m_avg_contract_price, 0) >= 0.15)
+         AND (ar.cust_prod_category = 'GX'
+              OR c.recent_6m_avg_contract_price / NULLIF(ar.anchor_contract_price, 0) <= 1.5)
         THEN c.recent_6m_avg_total_sls_qty
         WHEN c.latest_6_observed_months >= 3
         THEN c.latest_6_observed_avg_total_sls_qty
@@ -534,6 +554,8 @@ SELECT
               OR c.prior_6m_avg_contract_price > c.recent_6m_avg_contract_price * 5)
          AND (ar.cust_prod_category = 'GX'
               OR ar.anchor_contract_price / NULLIF(c.recent_6m_avg_contract_price, 0) >= 0.15)
+         AND (ar.cust_prod_category = 'GX'
+              OR c.recent_6m_avg_contract_price / NULLIF(ar.anchor_contract_price, 0) <= 1.5)
         THEN c.recent_6m_avg_total_net_cos
         WHEN c.latest_6_observed_months >= 3
         THEN c.latest_6_observed_avg_total_net_cos
@@ -544,6 +566,7 @@ SELECT
         WHEN ar.acct_classification = '340B-CP'         THEN 'REGRESSION'
         WHEN ar.cust_prod_category  = 'GLP-1'           THEN 'REGRESSION'
         WHEN ar.cust_prod_category  = 'MPB Specialty'   THEN 'AVG_YOY'
+        WHEN ar.cust_prod_category  = 'APOLLO'          THEN 'NO_TREND'
         WHEN c.sign_only_eligible = 1
          AND (ar.anchor_wac_spread IS NULL OR c.recent_6m_avg_wac_spread IS NULL
               OR (ar.anchor_wac_spread - c.recent_6m_avg_wac_spread) > -0.30)
@@ -562,6 +585,7 @@ SELECT
         WHEN ar.acct_classification = '340B-CP'         THEN c.raw_regression_trend_pct
         WHEN ar.cust_prod_category  = 'GLP-1'           THEN c.raw_regression_trend_pct
         WHEN ar.cust_prod_category  = 'MPB Specialty'   THEN c.avg_yoy_pct / 4.0
+        WHEN ar.cust_prod_category  = 'APOLLO'          THEN 0.0
         WHEN c.sign_only_eligible = 1
          AND (ar.anchor_wac_spread IS NULL OR c.recent_6m_avg_wac_spread IS NULL
               OR (ar.anchor_wac_spread - c.recent_6m_avg_wac_spread) > -0.30)
@@ -583,6 +607,7 @@ SELECT
             WHEN ar.acct_classification = '340B-CP'     THEN c.raw_regression_trend_pct
             WHEN ar.cust_prod_category  = 'GLP-1'       THEN c.raw_regression_trend_pct
             WHEN ar.cust_prod_category  = 'MPB Specialty' THEN c.avg_yoy_pct / 4.0
+            WHEN ar.cust_prod_category  = 'APOLLO'      THEN 0.0
             WHEN c.sign_only_eligible = 1
              AND (ar.anchor_wac_spread IS NULL OR c.recent_6m_avg_wac_spread IS NULL
                   OR (ar.anchor_wac_spread - c.recent_6m_avg_wac_spread) > -0.30)
@@ -611,6 +636,8 @@ SELECT
               OR c.prior_6m_avg_contract_price > c.recent_6m_avg_contract_price * 5)
          AND (ar.cust_prod_category = 'GX'
               OR ar.anchor_contract_price / NULLIF(c.recent_6m_avg_contract_price, 0) >= 0.15)
+         AND (ar.cust_prod_category = 'GX'
+              OR c.recent_6m_avg_contract_price / NULLIF(ar.anchor_contract_price, 0) <= 1.5)
         THEN 'MATERIAL_RECENT_6M_AVG_BASELINE'
         WHEN c.latest_6_observed_months >= 3 THEN 'MATERIAL_LATEST_6_OBS_AVG_FALLBACK'
         WHEN c.latest_6_observed_months > 0  THEN 'MATERIAL_LT_3_OBS_LATEST_PRICE'
@@ -628,6 +655,8 @@ SELECT
               OR c.prior_6m_avg_contract_price > c.recent_6m_avg_contract_price * 5)
          AND (ar.cust_prod_category = 'GX'
               OR ar.anchor_contract_price / NULLIF(c.recent_6m_avg_contract_price, 0) >= 0.15)
+         AND (ar.cust_prod_category = 'GX'
+              OR c.recent_6m_avg_contract_price / NULLIF(ar.anchor_contract_price, 0) <= 1.5)
         THEN
             CASE
                 WHEN ar.acct_classification = '340B-CP' OR ar.cust_prod_category = 'GLP-1'
