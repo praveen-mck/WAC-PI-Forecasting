@@ -1,16 +1,15 @@
 -- =========================================================
--- STEP 6: FUTURE MONTHS
--- - Generates 60 future monthly periods after each series anchor month
--- - Keyed on HYBRID_MODEL_KEY_3T + mtrl_num
+-- STEP 6: FUTURE MONTHS v19
+-- Changes from v18: table references updated to v19
 -- =========================================================
 
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_future_months_v18 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_future_months_v19 AS
 WITH base AS (
     SELECT
         HYBRID_MODEL_KEY_3T,
         mtrl_num,
         anchor_month
-    FROM uspd_analytics_den.analytics_gold.contract_price_material_assumptions_v18
+    FROM uspd_analytics_den.analytics_gold.contract_price_material_assumptions_v19
 ),
 
 expanded AS (

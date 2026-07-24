@@ -1,4 +1,19 @@
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v18 AS
+-- =========================================================
+-- STEP 5b: BACKTESTING EVALUATION DETAIL v19
+--
+-- Changes from v18:
+--   - All table references updated to v19
+--   - Actuals JOIN now filters exclude_from_actuals_flag = 0
+--     instead of exclude_from_training_flag = 0.
+--     Training-excluded rows with valid actuals now appear\
+--     in evaluation; only data quality failures are dropped.
+--   - top_100_brand_flag and brand_wac_rank sourced directly
+--     from contract_price_bt_forecasted_v19 (carried through
+--     from history profile pre-materialization in step 2).
+--     Inline top_100_brands CTE removed.
+-- =========================================================
+
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v19 AS
 
 WITH joined AS (
     SELECT
@@ -35,7 +50,8 @@ WITH joined AS (
 
         f.WAC,
         f.total_net_revenue,
-        a.brand_name,
+        f.top_100_brand_flag,
+        f.brand_wac_rank,
 
         f.first_month,
         f.anchor_month,
@@ -52,46 +68,45 @@ WITH joined AS (
         f.trend_source,
         f.forecasted_contract_price,
 
-        -- UPDATED: replaced recent_12m_months / prior_12m_months /
-        -- latest_12_observed_months with the 6m columns now output
-        -- by contract_price_bt_forecasted_v18 after the Step 5 fix
         f.recent_6m_months,
         f.latest_6_observed_months,
 
-        a.contract_price                        AS actual_contract_price,
-        a.account_class_cd                      AS account_class_cd,
-        a.wac_weighted                          AS actual_wac_weighted,
-        a.wac_spread                            AS actual_wac_spread,
-        a.total_sls_qty                         AS actual_sls_qty,
-        a.total_net_cos                         AS actual_net_cos,
+        -- Actuals: exclude_from_actuals_flag = 0 so training-excluded
+        -- rows with valid actuals are included in evaluation.
+        -- Data quality failures (actuals flag = 1) are excluded.
+        a.brand_name                    AS brand_name,
+        a.contract_price                AS actual_contract_price,
+        a.account_class_cd              AS account_class_cd,
+        a.wac_weighted                  AS actual_wac_weighted,
+        a.wac_spread                    AS actual_wac_spread,
+        a.total_sls_qty                 AS actual_sls_qty,
+        a.total_net_cos                 AS actual_net_cos,
 
-        -- ▶ price movement flags: COALESCE to 0 so first-month NULLs
-        --   (no prior month available) don't propagate into counts/rates
         COALESCE(a.wac_mom_decrease_flag,          0) AS wac_price_decrease_flag,
         COALESCE(a.wac_5pct_drop_flag,             0) AS wac_significant_decrease_flag,
         COALESCE(a.contract_price_drop_30pct_flag, 0) AS contract_price_drop_30pct_flag,
         COALESCE(a.contract_price_inc_30pct_flag,  0) AS contract_price_inc_30pct_flag
 
-    FROM uspd_analytics_den.analytics_gold.contract_price_bt_forecasted_v18 f
+    FROM uspd_analytics_den.analytics_gold.contract_price_bt_forecasted_v19 f
     LEFT JOIN (
         SELECT
             HYBRID_MODEL_KEY_3T,
             HYBRID_MODEL_KEY_3T_DESC,
             mtrl_num,
             cal_month_start_dt,
+            brand_name,
             contract_price,
             account_class_cd,
             wac_weighted,
             wac_spread,
             total_sls_qty,
             total_net_cos,
-            brand_name,
             wac_mom_decrease_flag,
             wac_5pct_drop_flag,
             contract_price_drop_30pct_flag,
             contract_price_inc_30pct_flag
-        FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v18
-        WHERE exclude_from_training_flag = 0
+        FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v19
+        WHERE exclude_from_actuals_flag = 0          -- changed from exclude_from_training_flag = 0
     ) a
       ON f.HYBRID_MODEL_KEY_3T = a.HYBRID_MODEL_KEY_3T
      AND f.mtrl_num             = a.mtrl_num
@@ -188,35 +203,20 @@ series_ranked AS (
             ORDER BY series_total_actual_dollars DESC NULLS LAST
         )                           AS revenue_quintile_desc
     FROM series_dollars
-),
-
--- ▶ top 100 brand names by SUM(WAC) across all rows in the eval table
-top_100_brands AS (
-    SELECT brand_name
-    FROM calc
-    GROUP BY brand_name
-    ORDER BY SUM(WAC) DESC
-    LIMIT 100
 )
 
 SELECT
     c.*,
 
-    -- ▶ 1 if this row's brand_name is in the top 100 by WAC, else 0
-    CASE
-        WHEN t.brand_name IS NOT NULL THEN 1
-        ELSE 0
-    END                                                         AS top_100_brand_flag,
-
-    -- ▶ pass/fail using tier-aware dollar error threshold:
-    --   top 100 brands  -> 10% APE threshold
-    --   all others      -> 15% APE threshold
+    -- top_100_brand_flag and brand_wac_rank already carried from
+    -- forecasted table (pre-materialized in history profile step 2).
+    -- Tier-aware APE threshold applied inline using the flag.
     CASE
         WHEN c.ape_dollars IS NULL THEN NULL
-        WHEN t.brand_name IS NOT NULL AND c.ape_dollars <= 0.10 THEN 1
-        WHEN t.brand_name IS NOT NULL AND c.ape_dollars >  0.10 THEN 0
-        WHEN t.brand_name IS NULL     AND c.ape_dollars <= 0.15 THEN 1
-        WHEN t.brand_name IS NULL     AND c.ape_dollars >  0.15 THEN 0
+        WHEN c.top_100_brand_flag = 1 AND c.ape_dollars <= 0.10 THEN 1
+        WHEN c.top_100_brand_flag = 1 AND c.ape_dollars >  0.10 THEN 0
+        WHEN c.top_100_brand_flag = 0 AND c.ape_dollars <= 0.15 THEN 1
+        WHEN c.top_100_brand_flag = 0 AND c.ape_dollars >  0.15 THEN 0
     END                                                         AS pass_flag_vs_top100_threshold,
 
     CASE
@@ -275,18 +275,17 @@ JOIN series_ranked sr
   ON c.run_id              = sr.run_id
  AND c.HYBRID_MODEL_KEY_3T = sr.HYBRID_MODEL_KEY_3T
  AND c.mtrl_num             = sr.mtrl_num
-LEFT JOIN top_100_brands t
-  ON c.brand_name = t.brand_name
 ;
 
 
 -- =====================================================================
--- SUMMARY — unchanged
+-- SUMMARY
 -- =====================================================================
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_eval_summary_run_v18 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_eval_summary_run_v19 AS
 SELECT
     run_id,
-    MODEL_TIER,
+    acct_classification,
+    cust_segment,
     sparse_price_confidence,
 
     COUNT(*)                                            AS row_cnt,
@@ -294,8 +293,11 @@ SELECT
                                                         AS series_cnt,
 
     MAX(WAC)                                            AS WAC,
-    MAX(total_net_revenue)                              AS total_net_revenue,
-    MAX(brand_name)                                     AS brand_name,
+
+    SUM(total_net_revenue)                              AS total_net_revenue,
+    SUM(actual_net_cos)                                 AS actual_net_cos,
+    SUM(actual_dollars)                                 AS sum_actual_dollars_reconstructed,
+    SUM(actual_net_cos) - SUM(actual_dollars)           AS diff_net_cos_vs_reconstructed,
 
     AVG(ape_contract_price)                             AS mape_contract_price,
     SUM(ae_contract_price)
@@ -336,7 +338,7 @@ SELECT
     COALESCE(COUNT_IF(contract_price_inc_30pct_flag  = 1) / NULLIF(COUNT(*), 0), 0)
                                                         AS contract_price_inc_30pct_rate
 
-FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v18
-GROUP BY run_id, MODEL_TIER, sparse_price_confidence
-ORDER BY run_id, MODEL_TIER, sparse_price_confidence
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v19
+GROUP BY run_id, acct_classification, cust_segment, sparse_price_confidence
+ORDER BY run_id, acct_classification, cust_segment, sparse_price_confidence
 ;

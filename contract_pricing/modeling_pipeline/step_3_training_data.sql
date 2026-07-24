@@ -1,50 +1,27 @@
 -- =========================================================
--- STEP 3: TRAINING CLEAN  v18
+-- STEP 3: TRAINING CLEAN v19
 --
--- Changes from v17:
---
---   1. CONDITIONAL OUTLIER THRESHOLD FOR NEW GENERICS
---      The v17 contract_price_change_outlier_flag excluded any month
---      with a MoM price change > 50%. For generic drugs (GX) in their
---      first 3 months of SAP history, this excluded legitimate large
---      price movements (100-800% repricing at network entry), causing
---      the anchor_contract_price in Step 4 to freeze at the pre-jump
---      price and never update. This is the root cause of the 100-800%
---      price drift seen in the Q4 anchor staleness analysis.
---
---      Fix: threshold is now conditional on acct_classification and
---      sap_months:
---        GX + sap_months <= 3  → 200% MoM threshold
---          (generic network-entry repricing is a real pricing event)
---        All other keys         → 50% MoM threshold (unchanged)
---
---      The 200% threshold was chosen to capture the observed drift
---      range (up to ~800%) while still excluding genuine single-month
---      data entry errors. Keys with >200% MoM change AND sap_months > 3
---      remain excluded under the original 50% rule.
---
---   Unchanged from v17:
---   - exclude_from_training_flag still takes precedence over outlier flag
---   - include_for_modeling_flag logic: exclude OR outlier → 0
---   - All MoM diagnostic columns retained
---   - sap_to_l2_coverage_ratio computation
---   - series_month_index and series_valid_month_count
+-- Changes from v18:
+--   - Source updated to contract_price_modeling_base_v19
+--   - ordered CTE dropped entirely. MoM columns now pulled
+--     directly from base table where they are pre-computed:
+--       prev_month_contract_price  (was: LAG(contract_price))
+--       prev_month_wac_weighted    (was: LAG(wac_spread) — note:
+--         prev_wac_spread was used only to compute abs change)
+--       contract_price_mom_pct_change (was: recomputed inline)
+--       wac_spread_mom_abs_change  (new in v19 base; replaces
+--         the mom_wac_spread_change_abs recompute here)
+--   - series_month_index and series_valid_month_count window
+--     functions retained but now applied directly over base
+--     without the ordered CTE wrapper
+--   - contract_price_change_outlier_flag logic unchanged
+--     (GX + sap_months <= 3 → 200% threshold; all others 50%)
 -- =========================================================
 
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_training_clean_v18 AS
-WITH ordered AS (
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_training_clean_v19 AS
+WITH base AS (
     SELECT
         b.*,
-
-        LAG(b.contract_price) OVER (
-            PARTITION BY b.HYBRID_MODEL_KEY_3T, b.mtrl_num
-            ORDER BY b.cal_month_start_dt
-        ) AS prev_contract_price,
-
-        LAG(b.wac_spread) OVER (
-            PARTITION BY b.HYBRID_MODEL_KEY_3T, b.mtrl_num
-            ORDER BY b.cal_month_start_dt
-        ) AS prev_wac_spread,
 
         ROW_NUMBER() OVER (
             PARTITION BY b.HYBRID_MODEL_KEY_3T, b.mtrl_num
@@ -55,74 +32,54 @@ WITH ordered AS (
             PARTITION BY b.HYBRID_MODEL_KEY_3T, b.mtrl_num
         ) AS series_valid_month_count
 
-    FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v17 b
+    FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v19 b
 ),
 
 calc AS (
     SELECT
-        o.*,
+        b.*,
 
-        CASE
-            WHEN o.prev_contract_price IS NOT NULL
-             AND o.prev_contract_price <> 0
-            THEN (o.contract_price - o.prev_contract_price)
-                 / o.prev_contract_price
-        END                                             AS mom_contract_price_change_pct,
+        -- MoM columns (prev_month_contract_price, prev_month_wac_weighted,
+        -- contract_price_mom_pct_change, wac_spread_mom_abs_change) are
+        -- already included via b.* from the base table. No recompute needed.
 
-        CASE
-            WHEN o.prev_wac_spread IS NOT NULL
-            THEN o.wac_spread - o.prev_wac_spread
-        END                                             AS mom_wac_spread_change_abs,
+        b.sap_months / NULLIF(b.l2_months, 0) AS sap_to_l2_coverage_ratio,
 
         -- =====================================================
-        -- contract_price_change_outlier_flag  (v18 updated)
+        -- contract_price_change_outlier_flag
         --
-        -- Threshold is conditional on segment and history depth:
+        -- GX + sap_months <= 3 → 200% MoM threshold
+        --   Generic network-entry repricing (100-800%) is a
+        --   real pricing event; excluding freezes the anchor.
         --
-        --   GX + sap_months <= 3 → 200% MoM threshold
-        --     Generic drugs in the first 3 months of SAP history
-        --     routinely reprice 100-800% as they enter the network.
-        --     Excluding these months freezes the anchor at the old
-        --     price and prevents Step 4 from seeing the new level.
-        --
-        --   All other keys → 50% MoM threshold (v17 default)
-        --     Preserves data-error filtering for established keys
-        --     and non-generic segments.
+        -- All other keys → 50% MoM threshold
         -- =====================================================
         CASE
-            WHEN o.prev_contract_price IS NOT NULL
-             AND o.prev_contract_price <> 0
-             AND o.CUST_PROD_CATEGORY = 'GX'
-             AND o.sap_months <= 3
-             AND ABS(
-                    (o.contract_price - o.prev_contract_price)
-                    / o.prev_contract_price
-                ) > 2.00                                -- 200% threshold for new generics
+            WHEN b.prev_month_contract_price IS NOT NULL
+             AND b.prev_month_contract_price <> 0
+             AND b.CUST_PROD_CATEGORY = 'GX'
+             AND b.sap_months <= 3
+             AND ABS(b.contract_price_mom_pct_change) > 2.00
             THEN 1
-            WHEN o.prev_contract_price IS NOT NULL
-             AND o.prev_contract_price <> 0
-             AND NOT (o.CUST_PROD_CATEGORY = 'GX' AND o.sap_months <= 3)
-             AND ABS(
-                    (o.contract_price - o.prev_contract_price)
-                    / o.prev_contract_price
-                ) > 0.50                                -- 50% threshold for all others
+            WHEN b.prev_month_contract_price IS NOT NULL
+             AND b.prev_month_contract_price <> 0
+             AND NOT (b.CUST_PROD_CATEGORY = 'GX' AND b.sap_months <= 3)
+             AND ABS(b.contract_price_mom_pct_change) > 0.50
             THEN 1
             ELSE 0
-        END                                             AS contract_price_change_outlier_flag,
+        END AS contract_price_change_outlier_flag
 
-        o.sap_months / NULLIF(o.l2_months, 0)          AS sap_to_l2_coverage_ratio
-
-    FROM ordered o
+    FROM base b
 )
 
 SELECT
     c.*,
 
     CASE
-        WHEN c.exclude_from_training_flag = 1          THEN 0
-        WHEN c.contract_price_change_outlier_flag = 1  THEN 0
+        WHEN c.exclude_from_training_flag = 1         THEN 0
+        WHEN c.contract_price_change_outlier_flag = 1 THEN 0
         ELSE 1
-    END                                                 AS include_for_modeling_flag
+    END AS include_for_modeling_flag
 
 FROM calc c
 ;

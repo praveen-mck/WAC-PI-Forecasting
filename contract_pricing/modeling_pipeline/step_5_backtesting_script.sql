@@ -1,41 +1,30 @@
 /* =====================================================================
-   CONTRACT PRICE BACKTEST PIPELINE (v18) — UPDATED
+   CONTRACT PRICE BACKTEST PIPELINE v19
    ---------------------------------------------------------------------
-   Changes from original:
+   Changes from v18:
 
-   STEP 5 (contract_price_bt_material_assumptions_v18):
-     Replaced self-contained 12m-window / trend=0 logic with a direct
-     JOIN to contract_price_material_assumptions_v18. This passes the
-     correct forecast_start_contract_price, expected_monthly_trend_pct,
-     assigned_trend_method, and forecast_start_price_source from the
-     global assumptions table (Step 4 of the modeling pipeline) into
-     the backtest. The original never read from that table, so all
-     AVG_YOY_PROMOTED, G5 guard, and ratio guard fixes were silently
-     ignored.
+   All steps:
+     - All table references updated to v19
 
-   STEP 6 (contract_price_bt_resolved_assumptions_v18):
-     - resolved_monthly_trend_pct: was hardcoded 0, now ma.expected_monthly_trend_pct
-     - trend_source: was hardcoded 'STATIC_NO_TREND', now ma.assigned_trend_method
-     - recent_12m_months / prior_12m_months / latest_12_observed_months
-       removed; replaced with recent_6m_months / latest_6_observed_months
-       (matching the output columns of the updated Step 5)
+   STEP 1 (contract_price_bt_series_profile_v19):
+     - Replaced self-contained ranked/first_row/last_row/agg CTEs with
+       a direct JOIN to contract_price_history_profile_v19. Eliminates
+       duplicated logic; series profile now inherits all flag-aware
+       history metrics (training-clean first/last/avg) from step 2.
 
-   STEP 8 (contract_price_bt_forecasted_v18):
-     - POWER exponent: was forecast_horizon_month_num (monthly exponent
-       on a per-quarter rate → 3x over-compounding). Fixed to
-       CEIL(forecast_horizon_month_num / 3.0) to match Step 4 formula:
-       price * (1 + trend)^CEIL(months_ahead/3)
-     - ra.recent_12m_months / ra.prior_12m_months / ra.latest_12_observed_months
-       updated to ra.recent_6m_months / ra.latest_6_observed_months
-
-   Steps 0–4 and 7: unchanged.
+   STEP 7 (contract_price_bt_future_actual_months_v19):
+     - Source is now full base table (no flag filter) so that all
+       actual months are available for backtesting evaluation,
+       including rows excluded from training.
+       Actuals evaluation uses exclude_from_actuals_flag = 0 filter
+       in step 5b rather than pre-filtering here.
    ===================================================================== */
 
 
 /* ---------------------------------------------------------------------
    STEP 0: BACKTEST RUNS — unchanged
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_runs_v18 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_runs_v19 AS
 SELECT
     'BT_2024_01' AS run_id,
     TO_DATE('2024-01-01') AS jump_off_month,
@@ -60,90 +49,79 @@ SELECT
 
 
 /* ---------------------------------------------------------------------
-   STEP 1: GLOBAL SERIES PROFILE — unchanged
+   STEP 1: GLOBAL SERIES PROFILE
+   ---------------------------------------------------------------------
+   Changed from v18: self-contained CTEs replaced with JOIN to
+   contract_price_history_profile_v19. All descriptor, lifecycle,
+   and aggregate columns now sourced from the flag-aware history
+   profile built in step 2.
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_series_profile_v18 AS
-WITH base AS (
-    SELECT *
-    FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v18
-),
-ranked AS (
-    SELECT
-        b.*,
-        ROW_NUMBER() OVER (
-            PARTITION BY b.HYBRID_MODEL_KEY_3T, b.mtrl_num
-            ORDER BY b.cal_month_start_dt ASC
-        ) AS rn_first,
-        ROW_NUMBER() OVER (
-            PARTITION BY b.HYBRID_MODEL_KEY_3T, b.mtrl_num
-            ORDER BY b.cal_month_start_dt DESC
-        ) AS rn_last
-    FROM base b
-),
-first_row AS (
-    SELECT
-        HYBRID_MODEL_KEY_3T,
-        mtrl_num,
-        cal_month_start_dt  AS first_month,
-        contract_price      AS first_contract_price
-    FROM ranked
-    WHERE rn_first = 1
-),
-last_row AS (
-    SELECT
-        HYBRID_MODEL_KEY_3T,
-        mtrl_num,
-        cal_month_start_dt  AS last_actual_month,
-        contract_price      AS last_actual_contract_price,
-        wac_weighted        AS last_actual_wac_weighted,
-        wac_spread          AS last_actual_wac_spread
-    FROM ranked
-    WHERE rn_last = 1
-),
-agg AS (
-    SELECT
-        HYBRID_MODEL_KEY_3T,
-        mtrl_num,
-        MAX(MODEL_TIER)                 AS MODEL_TIER,
-        MAX(sap_months)                 AS sap_months,
-        MAX(l2_months)                  AS l2_months,
-        MAX(cust_segment)               AS cust_segment,
-        MAX(acct_classification)        AS acct_classification,
-        MAX(cust_prod_category)         AS cust_prod_category,
-        MAX(national_grp_id)            AS national_grp_id,
-        MAX(national_grp_desc)          AS national_grp_desc,
-        MAX(mtrl_nme_nvgton)            AS mtrl_nme_nvgton,
-        MAX(ndc_num)                    AS ndc_num,
-        MAX(product_family)             AS product_family,
-        MAX(therapeutic_class)          AS therapeutic_class,
-        MAX(manufacturer_id)            AS manufacturer_id,
-        MAX(manufacturer_name)          AS manufacturer_name,
-        MAX(final_product_group)        AS final_product_group,
-        MAX(final_product_group_level)  AS final_product_group_level,
-        MAX(WAC)                        AS WAC,
-        MAX(TOTAL_NET_REVENUE)          AS Total_Net_Revenue,
-        COUNT(DISTINCT cal_month_start_dt) AS total_months_all_time
-    FROM base
-    GROUP BY HYBRID_MODEL_KEY_3T, mtrl_num
-)
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_series_profile_v19 AS
 SELECT
-    a.*,
-    f.first_month,
-    l.last_actual_month,
-    f.first_contract_price,
-    l.last_actual_contract_price,
-    l.last_actual_wac_weighted,
-    l.last_actual_wac_spread
-FROM agg a
-LEFT JOIN first_row f ON a.HYBRID_MODEL_KEY_3T = f.HYBRID_MODEL_KEY_3T AND a.mtrl_num = f.mtrl_num
-LEFT JOIN last_row  l ON a.HYBRID_MODEL_KEY_3T = l.HYBRID_MODEL_KEY_3T AND a.mtrl_num = l.mtrl_num
+    hp.HYBRID_MODEL_KEY_3T,
+    hp.mtrl_num,
+    hp.MODEL_TIER,
+    hp.SAP_MONTHS                   AS sap_months,
+    hp.L2_MONTHS                    AS l2_months,
+    hp.cust_segment,
+    hp.acct_classification,
+    hp.cust_prod_category,
+    hp.national_grp_id,
+    hp.national_grp_desc,
+    hp.mtrl_nme_nvgton,
+    hp.ndc_num,
+    hp.product_family,
+    hp.therapeutic_class,
+    hp.manufacturer_id,
+    hp.manufacturer_name,
+    hp.final_product_group,
+    -- final_product_group_level not in history profile agg; pull from base max
+    MAX(b.final_product_group_level) AS final_product_group_level,
+    MAX(b.WAC)                       AS WAC,
+    MAX(b.TOTAL_NET_REVENUE)         AS Total_Net_Revenue,
+    hp.first_month,
+    hp.last_month                    AS last_actual_month,
+    hp.first_contract_price,
+    hp.last_contract_price           AS last_actual_contract_price,
+    hp.last_wac_spread               AS last_actual_wac_spread,
+    hp.top_100_brand_flag,
+    hp.brand_wac_rank
+FROM uspd_analytics_den.analytics_gold.contract_price_history_profile_v19 hp
+LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_modeling_base_v19 b
+  ON hp.HYBRID_MODEL_KEY_3T = b.HYBRID_MODEL_KEY_3T
+ AND hp.mtrl_num             = b.mtrl_num
+GROUP BY
+    hp.HYBRID_MODEL_KEY_3T,
+    hp.mtrl_num,
+    hp.MODEL_TIER,
+    hp.SAP_MONTHS,
+    hp.L2_MONTHS,
+    hp.cust_segment,
+    hp.acct_classification,
+    hp.cust_prod_category,
+    hp.national_grp_id,
+    hp.national_grp_desc,
+    hp.mtrl_nme_nvgton,
+    hp.ndc_num,
+    hp.product_family,
+    hp.therapeutic_class,
+    hp.manufacturer_id,
+    hp.manufacturer_name,
+    hp.final_product_group,
+    hp.first_month,
+    hp.last_month,
+    hp.first_contract_price,
+    hp.last_contract_price,
+    hp.last_wac_spread,
+    hp.top_100_brand_flag,
+    hp.brand_wac_rank
 ;
 
 
 /* ---------------------------------------------------------------------
-   STEP 2: RUN ELIGIBILITY — unchanged
+   STEP 2: RUN ELIGIBILITY — unchanged logic, v19 references
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_run_eligibility_v18 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_run_eligibility_v19 AS
 SELECT
     r.run_id,
     r.jump_off_month,
@@ -172,6 +150,8 @@ SELECT
     sp.Total_Net_Revenue,
     sp.first_month,
     sp.last_actual_month,
+    sp.top_100_brand_flag,
+    sp.brand_wac_rank,
     CASE
         WHEN sp.first_month IS NOT NULL AND sp.first_month <= r.history_end_dt THEN 1
         ELSE 0
@@ -181,17 +161,17 @@ SELECT
         WHEN sp.first_month > r.history_end_dt THEN 'NOT_LAUNCHED_YET'
         ELSE 'ELIGIBLE'
     END AS data_coverage_flag
-FROM uspd_analytics_den.analytics_gold.contract_price_bt_runs_v18 r
-CROSS JOIN uspd_analytics_den.analytics_gold.contract_price_bt_series_profile_v18 sp
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_runs_v19 r
+CROSS JOIN uspd_analytics_den.analytics_gold.contract_price_bt_series_profile_v19 sp
 ;
 
 
 /* ---------------------------------------------------------------------
-   STEP 3: RUN-SPECIFIC LAST ACTUAL (RAW) — unchanged
+   STEP 3: RUN-SPECIFIC LAST ACTUAL (RAW) — unchanged logic, v19 refs
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_last_actual_v18 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_last_actual_v19 AS
 WITH eligible AS (
-    SELECT * FROM uspd_analytics_den.analytics_gold.contract_price_bt_run_eligibility_v18
+    SELECT * FROM uspd_analytics_den.analytics_gold.contract_price_bt_run_eligibility_v19
     WHERE is_eligible_for_run = 1
 ),
 raw_hist AS (
@@ -212,134 +192,166 @@ raw_hist AS (
             ORDER BY b.cal_month_start_dt DESC
         ) AS rn
     FROM eligible e
-    JOIN uspd_analytics_den.analytics_gold.contract_price_modeling_base_v18 b
+    JOIN uspd_analytics_den.analytics_gold.contract_price_modeling_base_v19 b
       ON e.HYBRID_MODEL_KEY_3T = b.HYBRID_MODEL_KEY_3T
      AND e.mtrl_num = b.mtrl_num
      AND b.cal_month_start_dt <= e.history_end_dt
+     AND b.exclude_from_training_flag = 0
 )
 SELECT
-    run_id, jump_off_month, history_end_dt,
-    HYBRID_MODEL_KEY_3T, mtrl_num,
-    cal_month_start_dt AS anchor_month,
-    contract_price     AS anchor_contract_price,
-    wac_weighted       AS anchor_wac_weighted,
-    wac_spread         AS anchor_wac_spread,
-    total_sls_qty      AS anchor_total_sls_qty,
-    total_net_cos      AS anchor_total_net_cos
+    run_id,
+    jump_off_month,
+    history_end_dt,
+    HYBRID_MODEL_KEY_3T,
+    mtrl_num,
+    cal_month_start_dt  AS anchor_month,
+    contract_price      AS anchor_contract_price,
+    wac_weighted        AS anchor_wac_weighted,
+    wac_spread          AS anchor_wac_spread,
+    total_sls_qty       AS anchor_total_sls_qty,
+    total_net_cos       AS anchor_total_net_cos
 FROM raw_hist
 WHERE rn = 1
 ;
 
 
 /* ---------------------------------------------------------------------
-   STEP 4: RUN-SPECIFIC CLEAN HIST PANEL — unchanged
+   STEP 4 (BT): LATEST OBSERVED PRICE WINDOW — unchanged logic, v19 refs
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_hist_clean_v18 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_latest_obs_v19 AS
+WITH eligible AS (
+    SELECT * FROM uspd_analytics_den.analytics_gold.contract_price_bt_run_eligibility_v19
+    WHERE is_eligible_for_run = 1
+),
+ranked_obs AS (
+    SELECT
+        e.run_id,
+        e.HYBRID_MODEL_KEY_3T,
+        e.mtrl_num,
+        b.cal_month_start_dt,
+        b.contract_price,
+        b.total_net_cos,
+        b.total_sls_qty,
+        b.wac_spread,
+        ROW_NUMBER() OVER (
+            PARTITION BY e.run_id, e.HYBRID_MODEL_KEY_3T, e.mtrl_num
+            ORDER BY b.cal_month_start_dt DESC
+        ) AS obs_rn
+    FROM eligible e
+    JOIN uspd_analytics_den.analytics_gold.contract_price_modeling_base_v19 b
+      ON e.HYBRID_MODEL_KEY_3T = b.HYBRID_MODEL_KEY_3T
+     AND e.mtrl_num             = b.mtrl_num
+     AND b.cal_month_start_dt  <= e.history_end_dt
+     AND b.exclude_from_training_flag = 0
+)
 SELECT
-    e.run_id, e.jump_off_month, e.lookback_years, e.history_start_dt, e.history_end_dt,
-    e.HYBRID_MODEL_KEY_3T, e.mtrl_num,
-    e.MODEL_TIER, e.sap_months, e.l2_months,
-    e.cust_segment, e.acct_classification, e.cust_prod_category,
-    e.national_grp_id, e.national_grp_desc,
-    e.mtrl_nme_nvgton, e.ndc_num,
-    e.product_family, e.therapeutic_class, e.manufacturer_id, e.manufacturer_name,
-    e.final_product_group, e.final_product_group_level,
-    t.cal_month_start_dt,
-    t.total_net_cos, t.total_sls_qty, t.contract_price,
-    t.wac_weighted, t.wac_spread,
-    t.mom_contract_price_change_pct,
-    t.contract_price_change_outlier_flag,
-    t.series_month_index,
-    t.series_valid_month_count,
-    t.sap_to_l2_coverage_ratio
-FROM uspd_analytics_den.analytics_gold.contract_price_bt_run_eligibility_v18 e
-JOIN uspd_analytics_den.analytics_gold.contract_price_training_clean_v18 t
-  ON e.HYBRID_MODEL_KEY_3T = t.HYBRID_MODEL_KEY_3T
- AND e.mtrl_num = t.mtrl_num
- AND t.cal_month_start_dt >= e.history_start_dt
- AND t.cal_month_start_dt <= e.history_end_dt
-WHERE e.is_eligible_for_run = 1
-  AND t.include_for_modeling_flag = 1
+    run_id,
+    HYBRID_MODEL_KEY_3T,
+    mtrl_num,
+    COUNT(DISTINCT cal_month_start_dt)          AS latest_6_observed_months,
+    NULLIF(SUM(total_net_cos), 0)
+        / NULLIF(SUM(total_sls_qty), 0)         AS latest_6_observed_avg_contract_price,
+    AVG(wac_spread)                             AS latest_6_observed_avg_wac_spread
+FROM ranked_obs
+WHERE obs_rn <= 6
+GROUP BY run_id, HYBRID_MODEL_KEY_3T, mtrl_num
 ;
 
 
 /* ---------------------------------------------------------------------
-   STEP 5: RUN MATERIAL-LEVEL ASSUMPTIONS — UPDATED
-   ---------------------------------------------------------------------
-   Replaces the original self-contained 12m-window / trend=0 logic with
-   a direct JOIN to contract_price_material_assumptions_v18 so that
-   AVG_YOY_PROMOTED, G5 guard, ratio guard fixes, and all other v18
-   assumptions flow into the backtest.
-
-   Join is on HYBRID_MODEL_KEY_3T + mtrl_num only (no run_id) because
-   the global assumptions table is not run-specific. Every run for a
-   given key receives the same modeling assumptions, which is correct —
-   the assumptions table represents the current training state.
-
-   Fallback: keys missing from the global assumptions table fall back
-   to the run-specific anchor price with zero trend.
+   STEP 5 (BT): MATERIAL ASSUMPTIONS — unchanged logic, v19 refs
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_material_assumptions_v18 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_material_assumptions_v19 AS
+WITH eligible AS (
+    SELECT * FROM uspd_analytics_den.analytics_gold.contract_price_bt_run_eligibility_v19
+    WHERE is_eligible_for_run = 1
+),
+recent_6m AS (
+    SELECT
+        e.run_id,
+        e.HYBRID_MODEL_KEY_3T,
+        e.mtrl_num,
+        la.anchor_month,
+        COUNT(DISTINCT CASE
+            WHEN b.cal_month_start_dt > ADD_MONTHS(la.anchor_month, -6)
+            THEN b.cal_month_start_dt END)                  AS recent_6m_months,
+        NULLIF(SUM(CASE
+            WHEN b.cal_month_start_dt > ADD_MONTHS(la.anchor_month, -6)
+            THEN b.total_net_cos END), 0)
+        / NULLIF(SUM(CASE
+            WHEN b.cal_month_start_dt > ADD_MONTHS(la.anchor_month, -6)
+            THEN b.total_sls_qty END), 0)                   AS recent_6m_avg_contract_price
+    FROM eligible e
+    JOIN uspd_analytics_den.analytics_gold.contract_price_bt_last_actual_v19 la
+      ON e.run_id              = la.run_id
+     AND e.HYBRID_MODEL_KEY_3T = la.HYBRID_MODEL_KEY_3T
+     AND e.mtrl_num             = la.mtrl_num
+    JOIN uspd_analytics_den.analytics_gold.contract_price_modeling_base_v19 b
+      ON e.HYBRID_MODEL_KEY_3T = b.HYBRID_MODEL_KEY_3T
+     AND e.mtrl_num             = b.mtrl_num
+     AND b.cal_month_start_dt  <= e.history_end_dt
+     AND b.exclude_from_training_flag = 0
+    GROUP BY e.run_id, e.HYBRID_MODEL_KEY_3T, e.mtrl_num, la.anchor_month
+)
 SELECT
     e.run_id,
     e.HYBRID_MODEL_KEY_3T,
     e.mtrl_num,
     la.anchor_month,
+    la.anchor_contract_price,
+    la.anchor_wac_weighted,
+    la.anchor_wac_spread,
 
-    -- Price baseline from global assumptions_v18
-    -- (6m window, ratio-guard fixed, G5 guard applied)
-    COALESCE(a.forecast_start_contract_price,  la.anchor_contract_price) AS forecast_start_contract_price,
-    COALESCE(a.forecast_start_wac_spread,      la.anchor_wac_spread)     AS forecast_start_wac_spread,
+    r6.recent_6m_months,
+    lo.latest_6_observed_months,
+    r6.recent_6m_avg_contract_price,
+    lo.latest_6_observed_avg_contract_price,
 
-    -- Trend from global assumptions_v18
-    -- (AVG_YOY_PROMOTED, SIGN_ONLY_025PCT, REGRESSION, NO_TREND, etc.)
-    COALESCE(a.expected_monthly_trend_pct, 0)           AS expected_monthly_trend_pct,
-    COALESCE(a.monthly_trend_pct_raw,      0)           AS monthly_trend_pct_raw,
-
-    -- Method and source labels
-    COALESCE(a.assigned_trend_method,       'NO_TREND')            AS assigned_trend_method,
-    COALESCE(a.forecast_start_price_source, 'NO_HISTORY_AVAILABLE') AS forecast_start_price_source,
-
-    -- History depth diagnostics (6m windows, consistent with Step 4)
-    a.recent_6m_months,
-    a.latest_6_observed_months,
-
-    -- Sparse confidence re-derived from 6m observed months
-    CASE
-        WHEN COALESCE(a.latest_6_observed_months, 0) >= 6 THEN 'PRICE_6MO_AVG'
-        WHEN COALESCE(a.latest_6_observed_months, 0) >= 3 THEN 'PRICE_3_TO_5_MO_AVG'
-        WHEN COALESCE(a.latest_6_observed_months, 0) >= 1 THEN 'PRICE_LAST_OBSERVED'
-        ELSE                                                    'NO_PRICE_AVAILABLE'
-    END AS sparse_price_confidence,
+    -- Pass through trend assumptions from the global step 4 table
+    ma.forecast_start_contract_price,
+    ma.forecast_start_wac_spread,
+    ma.forecast_start_price_source,
+    ma.sparse_price_confidence,
+    ma.is_sparse_price_flag,
+    ma.expected_monthly_trend_pct,
+    ma.assigned_trend_method,
 
     CASE
-        WHEN COALESCE(a.latest_6_observed_months, 0) < 6 THEN 1
-        ELSE                                                   0
-    END AS is_sparse_price_flag
+        WHEN lo.latest_6_observed_months >= 6  THEN 'PRICE_6MO_AVG'
+        WHEN lo.latest_6_observed_months >= 3  THEN 'PRICE_3_TO_5_MO_AVG'
+        WHEN lo.latest_6_observed_months >= 1  THEN 'PRICE_LAST_OBSERVED'
+        ELSE 'NO_PRICE_AVAILABLE'
+    END AS sparse_price_confidence_bt,
 
-FROM uspd_analytics_den.analytics_gold.contract_price_bt_run_eligibility_v18 e
-LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_bt_last_actual_v18 la
+    CASE
+        WHEN lo.latest_6_observed_months < 6 THEN 1
+        ELSE 0
+    END AS is_sparse_price_flag_bt
+
+FROM eligible e
+LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_bt_last_actual_v19 la
   ON e.run_id              = la.run_id
  AND e.HYBRID_MODEL_KEY_3T = la.HYBRID_MODEL_KEY_3T
  AND e.mtrl_num             = la.mtrl_num
-LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_material_assumptions_v18 a
-  ON e.HYBRID_MODEL_KEY_3T = a.HYBRID_MODEL_KEY_3T
- AND e.mtrl_num             = a.mtrl_num
+LEFT JOIN recent_6m r6
+  ON e.run_id              = r6.run_id
+ AND e.HYBRID_MODEL_KEY_3T = r6.HYBRID_MODEL_KEY_3T
+ AND e.mtrl_num             = r6.mtrl_num
+LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_bt_latest_obs_v19 lo
+  ON e.run_id              = lo.run_id
+ AND e.HYBRID_MODEL_KEY_3T = lo.HYBRID_MODEL_KEY_3T
+ AND e.mtrl_num             = lo.mtrl_num
+LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_material_assumptions_v19 ma
+  ON e.HYBRID_MODEL_KEY_3T = ma.HYBRID_MODEL_KEY_3T
+ AND e.mtrl_num             = ma.mtrl_num
 WHERE e.is_eligible_for_run = 1
 ;
 
 
 /* ---------------------------------------------------------------------
-   STEP 6: RUN-RESOLVED ASSUMPTIONS — UPDATED
-   ---------------------------------------------------------------------
-   Changes vs original:
-   - resolved_monthly_trend_pct: was 0, now ma.expected_monthly_trend_pct
-   - trend_source: was 'STATIC_NO_TREND', now ma.assigned_trend_method
-   - Diagnostic cols updated: recent_12m_months / prior_12m_months /
-     latest_12_observed_months → recent_6m_months / latest_6_observed_months
-     (matching updated Step 5 output columns)
+   STEP 6: RUN-RESOLVED ASSUMPTIONS — unchanged logic, v19 refs
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_resolved_assumptions_v18 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_resolved_assumptions_v19 AS
 SELECT
     e.run_id,
     e.jump_off_month,
@@ -370,6 +382,8 @@ SELECT
     e.final_product_group_level,
     e.WAC,
     e.Total_Net_Revenue,
+    e.top_100_brand_flag,
+    e.brand_wac_rank,
 
     e.first_month,
     la.anchor_month,
@@ -387,22 +401,18 @@ SELECT
     ma.sparse_price_confidence,
     ma.is_sparse_price_flag,
 
-    -- Updated diagnostic columns (6m windows from assumptions_v18)
     ma.recent_6m_months,
     ma.latest_6_observed_months,
 
-    -- UPDATED: pass trend through from assumptions_v18
-    -- was: 0 AS resolved_monthly_trend_pct
-    -- was: 'STATIC_NO_TREND' AS trend_source
-    ma.expected_monthly_trend_pct                       AS resolved_monthly_trend_pct,
-    ma.assigned_trend_method                            AS trend_source
+    ma.expected_monthly_trend_pct   AS resolved_monthly_trend_pct,
+    ma.assigned_trend_method        AS trend_source
 
-FROM uspd_analytics_den.analytics_gold.contract_price_bt_run_eligibility_v18 e
-LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_bt_last_actual_v18 la
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_run_eligibility_v19 e
+LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_bt_last_actual_v19 la
   ON e.run_id              = la.run_id
  AND e.HYBRID_MODEL_KEY_3T = la.HYBRID_MODEL_KEY_3T
  AND e.mtrl_num             = la.mtrl_num
-LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_bt_material_assumptions_v18 ma
+LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_bt_material_assumptions_v19 ma
   ON e.run_id              = ma.run_id
  AND e.HYBRID_MODEL_KEY_3T = ma.HYBRID_MODEL_KEY_3T
  AND e.mtrl_num             = ma.mtrl_num
@@ -412,9 +422,15 @@ WHERE e.is_eligible_for_run = 1
 
 
 /* ---------------------------------------------------------------------
-   STEP 7: FUTURE ACTUAL MONTHS — unchanged
+   STEP 7: FUTURE ACTUAL MONTHS
+   ---------------------------------------------------------------------
+   Changed from v18: source is now the full base table with no flag
+   filter. All actual months (including training-excluded rows) are
+   included so step 5b can evaluate forecasts against the full actual
+   universe. Actuals quality gate (exclude_from_actuals_flag = 0)
+   is applied in step 5b at join time.
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_future_actual_months_v18 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_future_actual_months_v19 AS
 SELECT DISTINCT
     ra.run_id,
     ra.jump_off_month,
@@ -424,8 +440,8 @@ SELECT DISTINCT
     CAST(months_between(b.cal_month_start_dt, ra.jump_off_month) AS INT) + 1
                                                         AS forecast_horizon_month_num,
     DATE_FORMAT(b.cal_month_start_dt, 'yyyy-MM')        AS forecast_year_month
-FROM uspd_analytics_den.analytics_gold.contract_price_bt_resolved_assumptions_v18 ra
-JOIN uspd_analytics_den.analytics_gold.contract_price_modeling_base_v18 b
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_resolved_assumptions_v19 ra
+JOIN uspd_analytics_den.analytics_gold.contract_price_modeling_base_v19 b
   ON ra.HYBRID_MODEL_KEY_3T = b.HYBRID_MODEL_KEY_3T
  AND ra.mtrl_num             = b.mtrl_num
  AND b.cal_month_start_dt >= ra.jump_off_month
@@ -434,19 +450,9 @@ JOIN uspd_analytics_den.analytics_gold.contract_price_modeling_base_v18 b
 
 
 /* ---------------------------------------------------------------------
-   STEP 8: FORECASTED CONTRACT PRICE — UPDATED
-   ---------------------------------------------------------------------
-   Changes vs original:
-   - POWER exponent: was fam.forecast_horizon_month_num (treated trend
-     as monthly rate, causing 3x over-compounding on a per-quarter rate).
-     Fixed to CEIL(fam.forecast_horizon_month_num / 3.0) to match the
-     Step 4 compounding formula: price * (1+trend)^CEIL(months_ahead/3)
-   - Diagnostic columns updated:
-     ra.recent_12m_months  → ra.recent_6m_months
-     ra.prior_12m_months   → removed
-     ra.latest_12_observed_months → ra.latest_6_observed_months
+   STEP 8: FORECASTED CONTRACT PRICE — unchanged logic, v19 refs
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_forecasted_v18 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_forecasted_v19 AS
 SELECT
     ra.run_id,
     ra.jump_off_month,
@@ -477,6 +483,8 @@ SELECT
     ra.final_product_group_level,
     src.WAC,
     src.total_net_revenue,
+    ra.top_100_brand_flag,
+    ra.brand_wac_rank,
 
     ra.first_month,
     ra.anchor_month,
@@ -492,7 +500,6 @@ SELECT
     ra.sparse_price_confidence,
     ra.is_sparse_price_flag,
 
-    -- Updated diagnostic columns (6m windows)
     ra.recent_6m_months,
     ra.latest_6_observed_months,
 
@@ -503,8 +510,6 @@ SELECT
     fam.forecast_horizon_month_num,
     fam.forecast_year_month,
 
-    -- UPDATED: exponent is CEIL(months/3) to match Step 4 per-quarter rate.
-    -- Original used forecast_horizon_month_num which over-compounded 3x.
     CASE
         WHEN ra.forecast_start_contract_price IS NULL THEN NULL
         ELSE GREATEST(
@@ -516,8 +521,8 @@ SELECT
         )
     END                                                 AS forecasted_contract_price
 
-FROM uspd_analytics_den.analytics_gold.contract_price_bt_resolved_assumptions_v18 ra
-JOIN uspd_analytics_den.analytics_gold.contract_price_bt_future_actual_months_v18 fam
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_resolved_assumptions_v19 ra
+JOIN uspd_analytics_den.analytics_gold.contract_price_bt_future_actual_months_v19 fam
   ON ra.run_id              = fam.run_id
  AND ra.HYBRID_MODEL_KEY_3T = fam.HYBRID_MODEL_KEY_3T
  AND ra.mtrl_num             = fam.mtrl_num
@@ -527,7 +532,7 @@ LEFT JOIN (
         mtrl_num,
         MAX(WAC)               AS WAC,
         MAX(TOTAL_NET_REVENUE) AS total_net_revenue
-    FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v18
+    FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v19
     GROUP BY HYBRID_MODEL_KEY_3T, mtrl_num
 ) src
   ON ra.HYBRID_MODEL_KEY_3T = src.HYBRID_MODEL_KEY_3T
