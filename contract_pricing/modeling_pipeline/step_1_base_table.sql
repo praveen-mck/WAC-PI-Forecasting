@@ -616,20 +616,35 @@ agg AS (
         SUM(n.TOTAL_NET_REVENUE)         AS TOTAL_NET_REVENUE,
         SUM(n.TOTAL_ZOMBIE_SALES)        AS TOTAL_ZOMBIE_SALES,
 
-        SUM(n.TOTAL_NET_COS)
-            / NULLIF(SUM(n.TOTAL_SLS_QTY), 0)
-                                         AS contract_price,
+        -- Fixed contract_price — WAC-aligned denominator.
+        -- WAC, 340B-CP, 340B-CE rows included unconditionally;
+        -- all others only when WAC_WEIGHTED is valid (not null, > 0).
+        SUM(CASE
+                WHEN n.ACCT_CLASSIFICATION IN ('WAC', '340B-CP', '340B-CE') THEN n.TOTAL_NET_COS
+                WHEN n.WAC_WEIGHTED IS NOT NULL AND n.WAC_WEIGHTED > 0      THEN n.TOTAL_NET_COS
+                ELSE NULL
+            END)
+        / NULLIF(SUM(CASE
+                WHEN n.ACCT_CLASSIFICATION IN ('WAC', '340B-CP', '340B-CE') THEN n.TOTAL_SLS_QTY
+                WHEN n.WAC_WEIGHTED IS NOT NULL AND n.WAC_WEIGHTED > 0      THEN n.TOTAL_SLS_QTY
+                ELSE NULL
+            END), 0)                     AS contract_price,
 
         SUM(n.WAC_WEIGHTED * n.TOTAL_SLS_QTY)
             / NULLIF(SUM(CASE WHEN n.WAC_WEIGHTED IS NOT NULL
                               THEN n.TOTAL_SLS_QTY END), 0)
                                          AS wac_weighted,
 
-        (
-            SUM(n.TOTAL_NET_COS)
-            / NULLIF(SUM(CASE WHEN n.WAC_WEIGHTED IS NOT NULL
-                              THEN n.WAC_WEIGHTED * n.TOTAL_SLS_QTY END), 0)
-        ) - 1                            AS wac_spread
+        -- Fixed wac_spread — denominator is WAC × qty (not plain WAC sum).
+        SUM(CASE
+                WHEN n.ACCT_CLASSIFICATION IN ('WAC', '340B-CP', '340B-CE') THEN n.TOTAL_NET_COS
+                WHEN n.WAC_WEIGHTED IS NOT NULL AND n.WAC_WEIGHTED > 0      THEN n.TOTAL_NET_COS
+                ELSE NULL
+            END)
+        / NULLIF(SUM(CASE
+                WHEN n.WAC_WEIGHTED IS NOT NULL AND n.WAC_WEIGHTED > 0
+                THEN n.WAC_WEIGHTED * n.TOTAL_SLS_QTY
+            END), 0) - 1                 AS wac_spread
 
     FROM normalized n
     GROUP BY
