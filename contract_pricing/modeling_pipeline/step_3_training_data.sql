@@ -1,15 +1,15 @@
 -- =========================================================
--- STEP 3: TRAINING CLEAN v19
+-- STEP 3: TRAINING CLEAN v20
 --
 -- Changes from v18:
---   - Source updated to contract_price_modeling_base_v19
+--   - Source updated to contract_price_modeling_base_v20
 --   - ordered CTE dropped entirely. MoM columns now pulled
 --     directly from base table where they are pre-computed:
 --       prev_month_contract_price  (was: LAG(contract_price))
 --       prev_month_wac_weighted    (was: LAG(wac_spread) — note:
 --         prev_wac_spread was used only to compute abs change)
 --       contract_price_mom_pct_change (was: recomputed inline)
---       wac_spread_mom_abs_change  (new in v19 base; replaces
+--       wac_spread_mom_abs_change  (new in v20 base; replaces
 --         the mom_wac_spread_change_abs recompute here)
 --   - series_month_index and series_valid_month_count window
 --     functions retained but now applied directly over base
@@ -18,7 +18,7 @@
 --     (GX + sap_months <= 3 → 200% threshold; all others 50%)
 -- =========================================================
 
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_training_clean_v19 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_training_clean_v20 AS
 WITH base AS (
     SELECT
         b.*,
@@ -32,7 +32,7 @@ WITH base AS (
             PARTITION BY b.HYBRID_MODEL_KEY_3T, b.mtrl_num
         ) AS series_valid_month_count
 
-    FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v19 b
+    FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v20 b
 ),
 
 calc AS (

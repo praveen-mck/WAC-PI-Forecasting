@@ -1,8 +1,8 @@
 -- =========================================================
--- STEP 2: HISTORY PROFILE v19
+-- STEP 2: HISTORY PROFILE v20
 --
 -- Changes from v18:
---   - Source updated to contract_price_modeling_base_v19
+--   - Source updated to contract_price_modeling_base_v20
 --   - All CTEs (first_row, last_row, agg) now filter
 --     exclude_from_training_flag = 0 so history metrics
 --     reflect only training-clean rows
@@ -14,10 +14,10 @@
 --     step 5b without re-aggregation
 -- =========================================================
 
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_history_profile_v19 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_history_profile_v20 AS
 WITH base AS (
     SELECT *
-    FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v19
+    FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v20
     WHERE exclude_from_training_flag = 0
 ),
 

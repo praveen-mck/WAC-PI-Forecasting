@@ -1,14 +1,14 @@
 -- =========================================================
--- STEP 7: FORECAST OUTPUT v19
+-- STEP 7: FORECAST OUTPUT v20
 -- Changes from v18:
---   - Table references updated to v19
+--   - Table references updated to v20
 --   - avg_yoy_pct standardized name reflected in comments
 --   - sparse_price_confidence and is_sparse_price_flag
---     sourced directly from material_assumptions_v19
+--     sourced directly from material_assumptions_v20
 --     (pre-computed there; derived inline logic removed)
 -- =========================================================
 
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_forecast_v19 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_forecast_v20 AS
 SELECT
     fm.HYBRID_MODEL_KEY_3T,
     fm.mtrl_num,
@@ -84,8 +84,8 @@ SELECT
         ) * COALESCE(ma.forecast_start_total_sls_qty, 0)
     END                                                 AS forecasted_net_cos
 
-FROM uspd_analytics_den.analytics_gold.contract_price_future_months_v19 fm
-JOIN uspd_analytics_den.analytics_gold.contract_price_material_assumptions_v19 ma
+FROM uspd_analytics_den.analytics_gold.contract_price_future_months_v20 fm
+JOIN uspd_analytics_den.analytics_gold.contract_price_material_assumptions_v20 ma
   ON fm.HYBRID_MODEL_KEY_3T = ma.HYBRID_MODEL_KEY_3T
  AND fm.mtrl_num             = ma.mtrl_num
 ;

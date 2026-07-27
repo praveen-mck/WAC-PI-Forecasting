@@ -1,18 +1,18 @@
 /* =====================================================================
-   CONTRACT PRICE BACKTEST PIPELINE v19
+   CONTRACT PRICE BACKTEST PIPELINE v20
    ---------------------------------------------------------------------
    Changes from v18:
 
    All steps:
-     - All table references updated to v19
+     - All table references updated to v20
 
-   STEP 1 (contract_price_bt_series_profile_v19):
+   STEP 1 (contract_price_bt_series_profile_v20):
      - Replaced self-contained ranked/first_row/last_row/agg CTEs with
-       a direct JOIN to contract_price_history_profile_v19. Eliminates
+       a direct JOIN to contract_price_history_profile_v20. Eliminates
        duplicated logic; series profile now inherits all flag-aware
        history metrics (training-clean first/last/avg) from step 2.
 
-   STEP 7 (contract_price_bt_future_actual_months_v19):
+   STEP 7 (contract_price_bt_future_actual_months_v20):
      - Source is now full base table (no flag filter) so that all
        actual months are available for backtesting evaluation,
        including rows excluded from training.
@@ -24,7 +24,7 @@
 /* ---------------------------------------------------------------------
    STEP 0: BACKTEST RUNS — unchanged
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_runs_v19 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_runs_v20 AS
 SELECT
     'BT_2024_01' AS run_id,
     TO_DATE('2024-01-01') AS jump_off_month,
@@ -52,11 +52,11 @@ SELECT
    STEP 1: GLOBAL SERIES PROFILE
    ---------------------------------------------------------------------
    Changed from v18: self-contained CTEs replaced with JOIN to
-   contract_price_history_profile_v19. All descriptor, lifecycle,
+   contract_price_history_profile_v20. All descriptor, lifecycle,
    and aggregate columns now sourced from the flag-aware history
    profile built in step 2.
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_series_profile_v19 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_series_profile_v20 AS
 SELECT
     hp.HYBRID_MODEL_KEY_3T,
     hp.mtrl_num,
@@ -86,8 +86,8 @@ SELECT
     hp.last_wac_spread               AS last_actual_wac_spread,
     hp.top_100_brand_flag,
     hp.brand_wac_rank
-FROM uspd_analytics_den.analytics_gold.contract_price_history_profile_v19 hp
-LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_modeling_base_v19 b
+FROM uspd_analytics_den.analytics_gold.contract_price_history_profile_v20 hp
+LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_modeling_base_v20 b
   ON hp.HYBRID_MODEL_KEY_3T = b.HYBRID_MODEL_KEY_3T
  AND hp.mtrl_num             = b.mtrl_num
 GROUP BY
@@ -119,9 +119,9 @@ GROUP BY
 
 
 /* ---------------------------------------------------------------------
-   STEP 2: RUN ELIGIBILITY — unchanged logic, v19 references
+   STEP 2: RUN ELIGIBILITY — unchanged logic, v20 references
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_run_eligibility_v19 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_run_eligibility_v20 AS
 SELECT
     r.run_id,
     r.jump_off_month,
@@ -161,17 +161,17 @@ SELECT
         WHEN sp.first_month > r.history_end_dt THEN 'NOT_LAUNCHED_YET'
         ELSE 'ELIGIBLE'
     END AS data_coverage_flag
-FROM uspd_analytics_den.analytics_gold.contract_price_bt_runs_v19 r
-CROSS JOIN uspd_analytics_den.analytics_gold.contract_price_bt_series_profile_v19 sp
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_runs_v20 r
+CROSS JOIN uspd_analytics_den.analytics_gold.contract_price_bt_series_profile_v20 sp
 ;
 
 
 /* ---------------------------------------------------------------------
-   STEP 3: RUN-SPECIFIC LAST ACTUAL (RAW) — unchanged logic, v19 refs
+   STEP 3: RUN-SPECIFIC LAST ACTUAL (RAW) — unchanged logic, v20 refs
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_last_actual_v19 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_last_actual_v20 AS
 WITH eligible AS (
-    SELECT * FROM uspd_analytics_den.analytics_gold.contract_price_bt_run_eligibility_v19
+    SELECT * FROM uspd_analytics_den.analytics_gold.contract_price_bt_run_eligibility_v20
     WHERE is_eligible_for_run = 1
 ),
 raw_hist AS (
@@ -192,7 +192,7 @@ raw_hist AS (
             ORDER BY b.cal_month_start_dt DESC
         ) AS rn
     FROM eligible e
-    JOIN uspd_analytics_den.analytics_gold.contract_price_modeling_base_v19 b
+    JOIN uspd_analytics_den.analytics_gold.contract_price_modeling_base_v20 b
       ON e.HYBRID_MODEL_KEY_3T = b.HYBRID_MODEL_KEY_3T
      AND e.mtrl_num = b.mtrl_num
      AND b.cal_month_start_dt <= e.history_end_dt
@@ -216,11 +216,11 @@ WHERE rn = 1
 
 
 /* ---------------------------------------------------------------------
-   STEP 4 (BT): LATEST OBSERVED PRICE WINDOW — unchanged logic, v19 refs
+   STEP 4 (BT): LATEST OBSERVED PRICE WINDOW — unchanged logic, v20 refs
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_latest_obs_v19 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_latest_obs_v20 AS
 WITH eligible AS (
-    SELECT * FROM uspd_analytics_den.analytics_gold.contract_price_bt_run_eligibility_v19
+    SELECT * FROM uspd_analytics_den.analytics_gold.contract_price_bt_run_eligibility_v20
     WHERE is_eligible_for_run = 1
 ),
 ranked_obs AS (
@@ -238,7 +238,7 @@ ranked_obs AS (
             ORDER BY b.cal_month_start_dt DESC
         ) AS obs_rn
     FROM eligible e
-    JOIN uspd_analytics_den.analytics_gold.contract_price_modeling_base_v19 b
+    JOIN uspd_analytics_den.analytics_gold.contract_price_modeling_base_v20 b
       ON e.HYBRID_MODEL_KEY_3T = b.HYBRID_MODEL_KEY_3T
      AND e.mtrl_num             = b.mtrl_num
      AND b.cal_month_start_dt  <= e.history_end_dt
@@ -259,11 +259,11 @@ GROUP BY run_id, HYBRID_MODEL_KEY_3T, mtrl_num
 
 
 /* ---------------------------------------------------------------------
-   STEP 5 (BT): MATERIAL ASSUMPTIONS — unchanged logic, v19 refs
+   STEP 5 (BT): MATERIAL ASSUMPTIONS — unchanged logic, v20 refs
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_material_assumptions_v19 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_material_assumptions_v20 AS
 WITH eligible AS (
-    SELECT * FROM uspd_analytics_den.analytics_gold.contract_price_bt_run_eligibility_v19
+    SELECT * FROM uspd_analytics_den.analytics_gold.contract_price_bt_run_eligibility_v20
     WHERE is_eligible_for_run = 1
 ),
 recent_6m AS (
@@ -282,11 +282,11 @@ recent_6m AS (
             WHEN b.cal_month_start_dt > ADD_MONTHS(la.anchor_month, -6)
             THEN b.total_sls_qty END), 0)                   AS recent_6m_avg_contract_price
     FROM eligible e
-    JOIN uspd_analytics_den.analytics_gold.contract_price_bt_last_actual_v19 la
+    JOIN uspd_analytics_den.analytics_gold.contract_price_bt_last_actual_v20 la
       ON e.run_id              = la.run_id
      AND e.HYBRID_MODEL_KEY_3T = la.HYBRID_MODEL_KEY_3T
      AND e.mtrl_num             = la.mtrl_num
-    JOIN uspd_analytics_den.analytics_gold.contract_price_modeling_base_v19 b
+    JOIN uspd_analytics_den.analytics_gold.contract_price_modeling_base_v20 b
       ON e.HYBRID_MODEL_KEY_3T = b.HYBRID_MODEL_KEY_3T
      AND e.mtrl_num             = b.mtrl_num
      AND b.cal_month_start_dt  <= e.history_end_dt
@@ -329,7 +329,7 @@ SELECT
     END AS is_sparse_price_flag_bt
 
 FROM eligible e
-LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_bt_last_actual_v19 la
+LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_bt_last_actual_v20 la
   ON e.run_id              = la.run_id
  AND e.HYBRID_MODEL_KEY_3T = la.HYBRID_MODEL_KEY_3T
  AND e.mtrl_num             = la.mtrl_num
@@ -337,11 +337,11 @@ LEFT JOIN recent_6m r6
   ON e.run_id              = r6.run_id
  AND e.HYBRID_MODEL_KEY_3T = r6.HYBRID_MODEL_KEY_3T
  AND e.mtrl_num             = r6.mtrl_num
-LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_bt_latest_obs_v19 lo
+LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_bt_latest_obs_v20 lo
   ON e.run_id              = lo.run_id
  AND e.HYBRID_MODEL_KEY_3T = lo.HYBRID_MODEL_KEY_3T
  AND e.mtrl_num             = lo.mtrl_num
-LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_material_assumptions_v19 ma
+LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_material_assumptions_v20 ma
   ON e.HYBRID_MODEL_KEY_3T = ma.HYBRID_MODEL_KEY_3T
  AND e.mtrl_num             = ma.mtrl_num
 WHERE e.is_eligible_for_run = 1
@@ -349,9 +349,9 @@ WHERE e.is_eligible_for_run = 1
 
 
 /* ---------------------------------------------------------------------
-   STEP 6: RUN-RESOLVED ASSUMPTIONS — unchanged logic, v19 refs
+   STEP 6: RUN-RESOLVED ASSUMPTIONS — unchanged logic, v20 refs
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_resolved_assumptions_v19 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_resolved_assumptions_v20 AS
 SELECT
     e.run_id,
     e.jump_off_month,
@@ -407,12 +407,12 @@ SELECT
     ma.expected_monthly_trend_pct   AS resolved_monthly_trend_pct,
     ma.assigned_trend_method        AS trend_source
 
-FROM uspd_analytics_den.analytics_gold.contract_price_bt_run_eligibility_v19 e
-LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_bt_last_actual_v19 la
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_run_eligibility_v20 e
+LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_bt_last_actual_v20 la
   ON e.run_id              = la.run_id
  AND e.HYBRID_MODEL_KEY_3T = la.HYBRID_MODEL_KEY_3T
  AND e.mtrl_num             = la.mtrl_num
-LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_bt_material_assumptions_v19 ma
+LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_bt_material_assumptions_v20 ma
   ON e.run_id              = ma.run_id
  AND e.HYBRID_MODEL_KEY_3T = ma.HYBRID_MODEL_KEY_3T
  AND e.mtrl_num             = ma.mtrl_num
@@ -430,7 +430,7 @@ WHERE e.is_eligible_for_run = 1
    universe. Actuals quality gate (exclude_from_actuals_flag = 0)
    is applied in step 5b at join time.
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_future_actual_months_v19 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_future_actual_months_v20 AS
 SELECT DISTINCT
     ra.run_id,
     ra.jump_off_month,
@@ -440,8 +440,8 @@ SELECT DISTINCT
     CAST(months_between(b.cal_month_start_dt, ra.jump_off_month) AS INT) + 1
                                                         AS forecast_horizon_month_num,
     DATE_FORMAT(b.cal_month_start_dt, 'yyyy-MM')        AS forecast_year_month
-FROM uspd_analytics_den.analytics_gold.contract_price_bt_resolved_assumptions_v19 ra
-JOIN uspd_analytics_den.analytics_gold.contract_price_modeling_base_v19 b
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_resolved_assumptions_v20 ra
+JOIN uspd_analytics_den.analytics_gold.contract_price_modeling_base_v20 b
   ON ra.HYBRID_MODEL_KEY_3T = b.HYBRID_MODEL_KEY_3T
  AND ra.mtrl_num             = b.mtrl_num
  AND b.cal_month_start_dt >= ra.jump_off_month
@@ -450,9 +450,9 @@ JOIN uspd_analytics_den.analytics_gold.contract_price_modeling_base_v19 b
 
 
 /* ---------------------------------------------------------------------
-   STEP 8: FORECASTED CONTRACT PRICE — unchanged logic, v19 refs
+   STEP 8: FORECASTED CONTRACT PRICE — unchanged logic, v20 refs
    --------------------------------------------------------------------- */
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_forecasted_v19 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_forecasted_v20 AS
 SELECT
     ra.run_id,
     ra.jump_off_month,
@@ -521,8 +521,8 @@ SELECT
         )
     END                                                 AS forecasted_contract_price
 
-FROM uspd_analytics_den.analytics_gold.contract_price_bt_resolved_assumptions_v19 ra
-JOIN uspd_analytics_den.analytics_gold.contract_price_bt_future_actual_months_v19 fam
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_resolved_assumptions_v20 ra
+JOIN uspd_analytics_den.analytics_gold.contract_price_bt_future_actual_months_v20 fam
   ON ra.run_id              = fam.run_id
  AND ra.HYBRID_MODEL_KEY_3T = fam.HYBRID_MODEL_KEY_3T
  AND ra.mtrl_num             = fam.mtrl_num
@@ -532,7 +532,7 @@ LEFT JOIN (
         mtrl_num,
         MAX(WAC)               AS WAC,
         MAX(TOTAL_NET_REVENUE) AS total_net_revenue
-    FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v19
+    FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v20
     GROUP BY HYBRID_MODEL_KEY_3T, mtrl_num
 ) src
   ON ra.HYBRID_MODEL_KEY_3T = src.HYBRID_MODEL_KEY_3T

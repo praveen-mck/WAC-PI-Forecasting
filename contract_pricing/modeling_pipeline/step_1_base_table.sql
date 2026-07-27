@@ -753,8 +753,8 @@ pass1_flags AS (
              AND contract_price > wac_weighted * 1.50               THEN 1
             WHEN wac_weighted IS NOT NULL AND wac_weighted > 0
              AND contract_price < wac_weighted * 0.01               THEN 1
-            WHEN wac_weighted IS NOT NULL AND wac_weighted > 0
-             AND contract_price > wac_weighted * 1.05               THEN 1
+            -- WHEN wac_weighted IS NOT NULL AND wac_weighted > 0
+            --  AND contract_price > wac_weighted * 1.05               THEN 1
             ELSE 0
         END AS prelim_exclude_from_training
 

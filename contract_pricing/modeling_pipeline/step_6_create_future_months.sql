@@ -1,15 +1,15 @@
 -- =========================================================
--- STEP 6: FUTURE MONTHS v19
--- Changes from v18: table references updated to v19
+-- STEP 6: FUTURE MONTHS v20
+-- Changes from v18: table references updated to v20
 -- =========================================================
 
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_future_months_v19 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_future_months_v20 AS
 WITH base AS (
     SELECT
         HYBRID_MODEL_KEY_3T,
         mtrl_num,
         anchor_month
-    FROM uspd_analytics_den.analytics_gold.contract_price_material_assumptions_v19
+    FROM uspd_analytics_den.analytics_gold.contract_price_material_assumptions_v20
 ),
 
 expanded AS (

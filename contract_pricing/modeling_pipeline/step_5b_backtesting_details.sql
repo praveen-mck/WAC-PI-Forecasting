@@ -1,19 +1,19 @@
 -- =========================================================
--- STEP 5b: BACKTESTING EVALUATION DETAIL v19
+-- STEP 5b: BACKTESTING EVALUATION DETAIL v20
 --
 -- Changes from v18:
---   - All table references updated to v19
+--   - All table references updated to v20
 --   - Actuals JOIN now filters exclude_from_actuals_flag = 0
 --     instead of exclude_from_training_flag = 0.
 --     Training-excluded rows with valid actuals now appear\
 --     in evaluation; only data quality failures are dropped.
 --   - top_100_brand_flag and brand_wac_rank sourced directly
---     from contract_price_bt_forecasted_v19 (carried through
+--     from contract_price_bt_forecasted_v20 (carried through
 --     from history profile pre-materialization in step 2).
 --     Inline top_100_brands CTE removed.
 -- =========================================================
 
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v19 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v20 AS
 
 WITH joined AS (
     SELECT
@@ -87,7 +87,7 @@ WITH joined AS (
         COALESCE(a.contract_price_drop_30pct_flag, 0) AS contract_price_drop_30pct_flag,
         COALESCE(a.contract_price_inc_30pct_flag,  0) AS contract_price_inc_30pct_flag
 
-    FROM uspd_analytics_den.analytics_gold.contract_price_bt_forecasted_v19 f
+    FROM uspd_analytics_den.analytics_gold.contract_price_bt_forecasted_v20 f
     LEFT JOIN (
         SELECT
             HYBRID_MODEL_KEY_3T,
@@ -105,7 +105,7 @@ WITH joined AS (
             wac_5pct_drop_flag,
             contract_price_drop_30pct_flag,
             contract_price_inc_30pct_flag
-        FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v19
+        FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v20
         WHERE exclude_from_actuals_flag = 0          -- changed from exclude_from_training_flag = 0
     ) a
       ON f.HYBRID_MODEL_KEY_3T = a.HYBRID_MODEL_KEY_3T
@@ -281,7 +281,7 @@ JOIN series_ranked sr
 -- =====================================================================
 -- SUMMARY
 -- =====================================================================
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_eval_summary_run_v19 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_eval_summary_run_v20 AS
 SELECT
     run_id,
     acct_classification,
@@ -338,7 +338,7 @@ SELECT
     COALESCE(COUNT_IF(contract_price_inc_30pct_flag  = 1) / NULLIF(COUNT(*), 0), 0)
                                                         AS contract_price_inc_30pct_rate
 
-FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v19
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v20
 GROUP BY run_id, acct_classification, cust_segment, sparse_price_confidence
 ORDER BY run_id, acct_classification, cust_segment, sparse_price_confidence
 ;
