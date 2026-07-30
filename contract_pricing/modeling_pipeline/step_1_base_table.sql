@@ -1,10 +1,25 @@
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_modeling_base_v20 AS
+-- =========================================================
+-- STEP 1: CONTRACT PRICE MODELING BASE v21
+--removing having >0 and change to having >0
+-- Changes from v20:
+--   - HYBRID_MODEL_KEY_3T removed; sap_cust_num_trim + mtrl_num
+--     is the base grain
+--   - groupby_key introduced in normalized CTE as a
+--     concatenated series key across 7 dimensions:
+--       sap_cust_num_trim, mtrl_num, acct_classification,
+--       cust_segment, cust_prod_category, manufacturer_id,
+--       subset_l2_id_resolved
+--   - groupby_key used in all PARTITION BY clauses from
+--     normalized onward (series_stats, avg_stats, mom_lagged)
+--   - WAC_SPREAD moved from base_agg to src (computed after
+--     WAC_WEIGHTED is available)
+--   - MODEL_TIER removed; sap_months/l2_months informational
+-- =========================================================
+
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_modeling_base_v21 AS
 
 WITH
 
-/* =========================================================
-   Standardized material key
-   ========================================================= */
 base_material_key AS (
     SELECT
         t_copa.*,
@@ -15,9 +30,6 @@ base_material_key AS (
     FROM fdp_prod.psas_fdp_usp_gold.vw_pharma_profitability_actuals_fpa t_copa
 ),
 
-/* =========================================================
-   Material master
-   ========================================================= */
 material_master AS (
     SELECT
         MTRL_NUM_STD,
@@ -48,9 +60,6 @@ material_master AS (
     WHERE rn = 1
 ),
 
-/* =========================================================
-   Manufacturer
-   ========================================================= */
 manufacturer AS (
     SELECT MTRL_NUM_STD, MANUFACTURER_ID, MANUFACTURER_NAME
     FROM (
@@ -76,9 +85,6 @@ manufacturer AS (
     WHERE rn = 1
 ),
 
-/* =========================================================
-   Item current — primary NDC per material
-   ========================================================= */
 item_curr AS (
     SELECT
         LPAD(
@@ -101,9 +107,6 @@ item_curr AS (
     WHERE rn = 1
 ),
 
-/* =========================================================
-   NDC brand fallback
-   ========================================================= */
 ndc AS (
     SELECT NDC_NUM, BRND_NAM
     FROM (
@@ -121,9 +124,6 @@ ndc AS (
     WHERE rn = 1
 ),
 
-/* =========================================================
-   VSTX — NULL guard on ATWRT_PROD_FAMILY
-   ========================================================= */
 vstx AS (
     SELECT MTRL_NUM_STD, THERAPEUTIC_CLASS, ATWRT_PROD_FAMILY
     FROM (
@@ -149,9 +149,6 @@ vstx AS (
     WHERE rn = 1
 ),
 
-/* =========================================================
-   AHFS therapeutic class
-   ========================================================= */
 ahfs AS (
     SELECT THERA_CLS_CD_CLEAN, THERA_CLS_DSCR
     FROM (
@@ -167,9 +164,6 @@ ahfs AS (
     WHERE rn = 1
 ),
 
-/* =========================================================
-   Base layer — invoice grain before aggregation
-   ========================================================= */
 base_layer AS (
     SELECT
         DATE_FORMAT(t.POST_DT, 'yyyy-MM')                           AS YEAR_MONTH,
@@ -289,7 +283,6 @@ base_layer AS (
         t.NET_REVENUE
 
     FROM base_material_key t
-
     INNER JOIN material_master m   ON t.MTRL_NUM_STD = m.MTRL_NUM_STD
     INNER JOIN manufacturer mf     ON t.MTRL_NUM_STD = mf.MTRL_NUM_STD
     INNER JOIN item_curr ic        ON t.MTRL_NUM_STD = ic.MTRL_NUM_STD
@@ -299,7 +292,6 @@ base_layer AS (
     INNER JOIN uspd_dealpricing_snowflake.edwrpt.dim_cust_acct_curr cust_mstr
         ON  LPAD(RIGHT(CAST(t.sap_cust_num AS STRING), 6), 6, '0')
           = LPAD(RIGHT(CAST(cust_mstr.CUST_ACCT_ID AS STRING), 6), 6, '0')
-
     WHERE cust_mstr.ACTIVE_CUST_IND = 'A'
       AND t.POST_DT BETWEEN '2022-01-01' AND '2026-05-31'
       AND t.CMPNY_CD IN ('8000','8545')
@@ -307,11 +299,11 @@ base_layer AS (
       AND t.SLS_QTY_BEX > 0
       AND t.SLS_QTY_BEX IS NOT NULL
       AND t.BILL_TYPE_CD IN ('ZPD1','ZPD5','ZPDS','ZPF2','ZPS1','ZPS3','ZPS6','ZPS7')
-      AND t.FPA_CUST_SEG_CD IN ('A','B','C','D','W','F','H')  -- excludes INTERCO at source
+      AND t.FPA_CUST_SEG_CD IN ('A','B','C','D','W','F','H')
 ),
 
 /* =========================================================
-   Base aggregation
+   Base aggregation — grain is full 7-dimension key
    ========================================================= */
 base_agg AS (
     SELECT
@@ -346,7 +338,6 @@ base_agg AS (
         CONTRACT_TYPE,
 
         SUM(ZOMBIE_SALE_FLAG)                                           AS TOTAL_ZOMBIE_SALES,
-
         SUM(NET_COS) / NULLIF(SUM(SLS_QTY_BEX), 0)                    AS CONTRACT_PRICE,
         SUM(NET_COS)                                                    AS TOTAL_NET_COS,
         SUM(SLS_QTY_BEX)                                                AS TOTAL_SLS_QTY,
@@ -355,29 +346,24 @@ base_agg AS (
         SUM(CASE WHEN WAC IS NOT NULL AND SLS_QTY_BEX > 0 THEN WAC END)
             / NULLIF(SUM(CASE WHEN WAC IS NOT NULL AND SLS_QTY_BEX > 0 THEN SLS_QTY_BEX END), 0)
                                                                         AS WAC_WEIGHTED,
-
         SUM(CASE WHEN WAC IS NOT NULL AND SLS_QTY_BEX > 0 THEN WAC END)
             / NULLIF(SUM(CASE WHEN WAC IS NOT NULL AND SLS_QTY_BEX > 0 THEN SLS_QTY_BEX END), 0)
-                                                                        AS WAC,
-
-        (SUM(NET_COS) / NULLIF(SUM(WAC), 0)) - 1                       AS WAC_SPREAD
+                                                                        AS WAC
 
     FROM base_layer
     GROUP BY ALL
-    HAVING ABS(SUM(NET_COS))                              > 1
+    HAVING ABS(SUM(NET_COS))                              > 0
        AND SUM(NET_COS) / NULLIF(SUM(SLS_QTY_BEX), 0)   > 0
 ),
 
 /* =========================================================
-   Source filter — hard data quality gates only.
-   Rows failing these never appear in output.
-
-   CONTRACT_PRICE > 0 and TOTAL_NET_COS > 0 enforced at
-   the invoice grain via HAVING in base_agg, matching the
-   reference query logic. Only null guards remain here.
+   Source filter — WAC_SPREAD computed here after
+   WAC_WEIGHTED is available
    ========================================================= */
 src AS (
-    SELECT *
+    SELECT
+        *,
+        (TOTAL_NET_COS / NULLIF(WAC_WEIGHTED * TOTAL_SLS_QTY, 0)) - 1  AS WAC_SPREAD
     FROM base_agg
     WHERE YEAR_MONTH        IS NOT NULL
       AND MTRL_NUM          IS NOT NULL
@@ -387,52 +373,59 @@ src AS (
 ),
 
 /* =========================================================
-   Coverage CTEs
+   Coverage CTEs — informational only in v21
    ========================================================= */
 sap_coverage AS (
     SELECT
-        CONCAT_WS('|',
-            MTRL_NUM, CUST_SEGMENT, ACCT_CLASSIFICATION,
-            CUST_PROD_CATEGORY, COALESCE(sap_cust_num_trim, 'NA')
-        ) AS sap_key,
+        MTRL_NUM,
+        sap_cust_num_trim,
+        CUST_SEGMENT,
+        ACCT_CLASSIFICATION,
+        CUST_PROD_CATEGORY,
         COUNT(DISTINCT YEAR_MONTH) AS sap_months
     FROM src
     GROUP BY
-        CONCAT_WS('|',
-            MTRL_NUM, CUST_SEGMENT, ACCT_CLASSIFICATION,
-            CUST_PROD_CATEGORY, COALESCE(sap_cust_num_trim, 'NA')
-        )
+        MTRL_NUM,
+        sap_cust_num_trim,
+        CUST_SEGMENT,
+        ACCT_CLASSIFICATION,
+        CUST_PROD_CATEGORY
 ),
 
 l2_coverage AS (
     SELECT
-        CONCAT_WS('|',
-            MTRL_NUM, CUST_SEGMENT, ACCT_CLASSIFICATION, CUST_PROD_CATEGORY,
-            COALESCE(
-                CASE
-                    WHEN CUST_SEGMENT_CD IN ('F','H')     THEN CAST(COMMON_GRP_ID AS STRING)
-                    WHEN CUST_SEGMENT_CD IN ('C','D','W') THEN CAST(CHAIN_ID AS STRING)
-                    ELSE CAST(COMMON_GRP_ID AS STRING)
-                END,
-            'NA')
-        ) AS l2_key,
+        MTRL_NUM,
+        CUST_SEGMENT,
+        CUST_SEGMENT_CD,
+        ACCT_CLASSIFICATION,
+        CUST_PROD_CATEGORY,
+        COALESCE(
+            CASE
+                WHEN CUST_SEGMENT_CD IN ('F','H')     THEN CAST(COMMON_GRP_ID AS STRING)
+                WHEN CUST_SEGMENT_CD IN ('C','D','W') THEN CAST(CHAIN_ID AS STRING)
+                ELSE CAST(COMMON_GRP_ID AS STRING)
+            END,
+        'NA') AS subset_l2_id_resolved,
         COUNT(DISTINCT YEAR_MONTH) AS l2_months
     FROM src
     GROUP BY
-        CONCAT_WS('|',
-            MTRL_NUM, CUST_SEGMENT, ACCT_CLASSIFICATION, CUST_PROD_CATEGORY,
-            COALESCE(
-                CASE
-                    WHEN CUST_SEGMENT_CD IN ('F','H')     THEN CAST(COMMON_GRP_ID AS STRING)
-                    WHEN CUST_SEGMENT_CD IN ('C','D','W') THEN CAST(CHAIN_ID AS STRING)
-                    ELSE CAST(COMMON_GRP_ID AS STRING)
-                END,
-            'NA')
-        )
+        MTRL_NUM,
+        CUST_SEGMENT,
+        CUST_SEGMENT_CD,
+        ACCT_CLASSIFICATION,
+        CUST_PROD_CATEGORY,
+        COALESCE(
+            CASE
+                WHEN CUST_SEGMENT_CD IN ('F','H')     THEN CAST(COMMON_GRP_ID AS STRING)
+                WHEN CUST_SEGMENT_CD IN ('C','D','W') THEN CAST(CHAIN_ID AS STRING)
+                ELSE CAST(COMMON_GRP_ID AS STRING)
+            END,
+        'NA')
 ),
 
 /* =========================================================
-   Normalized
+   Normalized — groupby_key defined here using all
+   7 series dimensions including subset_l2_id_resolved
    ========================================================= */
 normalized AS (
     SELECT
@@ -454,8 +447,13 @@ normalized AS (
         s.SUBSET_L2_DESC,
         s.MTRL_NUM,
         s.MTRL_NME_NVGTON,
+        s.sap_cust_num_trim,
+        s.CUST_ID,
+        s.CUST_ID_trim,
         s.NDC_NUM                               AS ndc_num,
         s.WAC,
+        s.WAC_WEIGHTED,
+        s.WAC_SPREAD,
         s.TOTAL_NET_REVENUE,
         s.BRAND_NAME,
         s.PRODUCT_FAMILY,
@@ -464,8 +462,8 @@ normalized AS (
         s.MANUFACTURER_NAME,
         s.TOTAL_NET_COS,
         s.TOTAL_SLS_QTY,
-        s.WAC_WEIGHTED,
         s.TOTAL_ZOMBIE_SALES,
+        s.CONTRACT_PRICE,
 
         CASE
             WHEN s.PRODUCT_FAMILY    IS NOT NULL AND TRIM(s.PRODUCT_FAMILY)    NOT IN ('','UNKNOWN') THEN s.PRODUCT_FAMILY
@@ -480,8 +478,6 @@ normalized AS (
             WHEN s.MANUFACTURER_NAME IS NOT NULL AND TRIM(s.MANUFACTURER_NAME) NOT IN ('','UNKNOWN') THEN 'MANUFACTURER_NAME'
             ELSE 'UNKNOWN'
         END AS final_product_group_level,
-
-        s.sap_cust_num_trim,
 
         COALESCE(
             CASE
@@ -505,21 +501,18 @@ normalized AS (
             ELSE 'COMMON_GRP_DESC'
         END AS subset_l2_desc_source,
 
-        CONCAT_WS('|',
-            s.MTRL_NUM, s.CUST_SEGMENT, s.ACCT_CLASSIFICATION,
-            s.CUST_PROD_CATEGORY, COALESCE(s.sap_cust_num_trim, 'NA')
-        ) AS sap_key,
+        -- Informational sparsity signals
+        sc.sap_months,
+        lc.l2_months,
 
+        -- Series key across all 7 dimensions
         CONCAT_WS('|',
-            CONCAT('MTRL_NME_NVGTON=',      COALESCE(CAST(s.MTRL_NME_NVGTON AS STRING), 'NA')),
-            CONCAT('CUST_SEGMENT=',         COALESCE(s.CUST_SEGMENT,        'NA')),
-            CONCAT('ACCT_CLASSIFICATION=',  COALESCE(s.ACCT_CLASSIFICATION, 'NA')),
-            CONCAT('CUST_PROD_CATEGORY=',   COALESCE(s.CUST_PROD_CATEGORY,  'NA')),
-            CONCAT('CUST_NAME=',            COALESCE(s.CUST_NAME,           'NA'))
-        ) AS sap_key_desc,
-
-        CONCAT_WS('|',
-            s.MTRL_NUM, s.CUST_SEGMENT, s.ACCT_CLASSIFICATION, s.CUST_PROD_CATEGORY,
+            COALESCE(s.sap_cust_num_trim,                       'NA'),
+            COALESCE(s.MTRL_NUM,                                'NA'),
+            COALESCE(s.ACCT_CLASSIFICATION,                     'NA'),
+            COALESCE(s.CUST_SEGMENT,                            'NA'),
+            COALESCE(s.CUST_PROD_CATEGORY,                      'NA'),
+            COALESCE(CAST(s.MANUFACTURER_ID AS STRING),         'NA'),
             COALESCE(
                 CASE
                     WHEN s.CUST_SEGMENT_CD IN ('F','H')     THEN CAST(s.COMMON_GRP_ID AS STRING)
@@ -527,275 +520,88 @@ normalized AS (
                     ELSE CAST(s.COMMON_GRP_ID AS STRING)
                 END,
             'NA')
-        ) AS l2_key,
-
-        CONCAT_WS('|',
-            CONCAT('MTRL_NME_NVGTON=',      COALESCE(CAST(s.MTRL_NME_NVGTON AS STRING), 'NA')),
-            CONCAT('CUST_SEGMENT=',         COALESCE(s.CUST_SEGMENT,        'NA')),
-            CONCAT('ACCT_CLASSIFICATION=',  COALESCE(s.ACCT_CLASSIFICATION, 'NA')),
-            CONCAT('CUST_PROD_CATEGORY=',   COALESCE(s.CUST_PROD_CATEGORY,  'NA')),
-            CONCAT(
-                CASE
-                    WHEN s.CUST_SEGMENT_CD IN ('F','H')     THEN 'COMMON_GRP_DESC='
-                    WHEN s.CUST_SEGMENT_CD IN ('C','D','W') THEN 'CHAIN_DESC='
-                    ELSE 'COMMON_GRP_DESC='
-                END,
-                COALESCE(CAST(
-                    CASE
-                        WHEN s.CUST_SEGMENT_CD IN ('F','H')     THEN s.COMMON_GRP_DESC
-                        WHEN s.CUST_SEGMENT_CD IN ('C','D','W') THEN s.CHAIN_DESC
-                        ELSE s.COMMON_GRP_DESC
-                    END
-                AS STRING), 'NA')
-            )
-        ) AS l2_key_desc,
-
-        CONCAT_WS('|',
-            s.MTRL_NUM, s.CUST_SEGMENT, s.ACCT_CLASSIFICATION,
-            s.CUST_PROD_CATEGORY,
-            COALESCE(s.NATIONAL_GRP_ID, 'NA')
-        ) AS nat_key,
-
-        CONCAT_WS('|',
-            CONCAT('MTRL_NME_NVGTON=',    COALESCE(CAST(s.MTRL_NME_NVGTON AS STRING), 'NA')),
-            CONCAT('CUST_SEGMENT=',       COALESCE(s.CUST_SEGMENT,        'NA')),
-            CONCAT('ACCT_CLASSIFICATION=',COALESCE(s.ACCT_CLASSIFICATION, 'NA')),
-            CONCAT('CUST_PROD_CATEGORY=', COALESCE(s.CUST_PROD_CATEGORY,  'NA')),
-            CONCAT('NATIONAL_GRP_DESC=',  COALESCE(CAST(s.NATIONAL_GRP_DESC AS STRING), 'NA'))
-        ) AS nat_key_desc
+        )                                                       AS groupby_key
 
     FROM src s
+    LEFT JOIN sap_coverage sc
+        ON  s.MTRL_NUM            = sc.MTRL_NUM
+        AND s.sap_cust_num_trim   = sc.sap_cust_num_trim
+        AND s.CUST_SEGMENT        = sc.CUST_SEGMENT
+        AND s.ACCT_CLASSIFICATION = sc.ACCT_CLASSIFICATION
+        AND s.CUST_PROD_CATEGORY  = sc.CUST_PROD_CATEGORY
+    LEFT JOIN l2_coverage lc
+        ON  s.MTRL_NUM            = lc.MTRL_NUM
+        AND s.CUST_SEGMENT        = lc.CUST_SEGMENT
+        AND s.CUST_SEGMENT_CD     = lc.CUST_SEGMENT_CD
+        AND s.ACCT_CLASSIFICATION = lc.ACCT_CLASSIFICATION
+        AND s.CUST_PROD_CATEGORY  = lc.CUST_PROD_CATEGORY
+        AND COALESCE(
+                CASE
+                    WHEN s.CUST_SEGMENT_CD IN ('F','H')     THEN CAST(s.COMMON_GRP_ID AS STRING)
+                    WHEN s.CUST_SEGMENT_CD IN ('C','D','W') THEN CAST(s.CHAIN_ID AS STRING)
+                    ELSE CAST(s.COMMON_GRP_ID AS STRING)
+                END,
+            'NA') = lc.subset_l2_id_resolved
 ),
 
-/* =========================================================
-   Aggregation across normalized rows
-   ========================================================= */
-agg AS (
-    SELECT
-        n.cal_month_start_dt,
-        n.YEAR_MONTH,
-        n.CUST_SEGMENT,
-        n.ACCT_CLASSIFICATION,
-        n.account_class_cd,
-        n.CUST_PROD_CATEGORY,
-        n.NATIONAL_GRP_ID,
-        n.NATIONAL_GRP_DESC,
-        n.MTRL_NUM,
-        n.sap_cust_num_trim,
-        n.sap_key,
-        n.l2_key,
-        n.nat_key,
-        n.sap_key_desc,
-        n.l2_key_desc,
-        n.nat_key_desc,
-        n.subset_l2_id_resolved,
-        n.subset_l2_desc_resolved,
-        n.subset_l2_desc_source,
-
-        MAX(n.MTRL_NME_NVGTON)           AS MTRL_NME_NVGTON,
-        MAX(n.ndc_num)                   AS ndc_num,
-        MAX(n.PRODUCT_FAMILY)            AS PRODUCT_FAMILY,
-        MAX(n.THERAPEUTIC_CLASS)         AS THERAPEUTIC_CLASS,
-        MAX(n.MANUFACTURER_ID)           AS MANUFACTURER_ID,
-        MAX(n.MANUFACTURER_NAME)         AS MANUFACTURER_NAME,
-        MAX(n.final_product_group)       AS final_product_group,
-        MAX(n.final_product_group_level) AS final_product_group_level,
-        MAX(n.CUST_NAME)                 AS CUST_NAME,
-        MAX(n.BRAND_NAME)                AS BRAND_NAME,
-        MAX(n.COMMON_GRP_ID)             AS COMMON_GRP_ID,
-        MAX(n.COMMON_GRP_DESC)           AS COMMON_GRP_DESC,
-        MAX(n.CHAIN_ID)                  AS CHAIN_ID,
-        MAX(n.CHAIN_DESC)                AS CHAIN_DESC,
-        MAX(n.SUBSET_L2_ID)              AS SUBSET_L2_ID,
-        MAX(n.SUBSET_L2_DESC)            AS SUBSET_L2_DESC,
-        MAX(n.WAC)                       AS WAC,
-
-        COUNT(*)                         AS contributing_rows,
-        SUM(n.TOTAL_NET_COS)             AS TOTAL_NET_COS,
-        SUM(n.TOTAL_SLS_QTY)             AS TOTAL_SLS_QTY,
-        SUM(n.TOTAL_NET_REVENUE)         AS TOTAL_NET_REVENUE,
-        SUM(n.TOTAL_ZOMBIE_SALES)        AS TOTAL_ZOMBIE_SALES,
-
-        -- Fixed contract_price — WAC-aligned denominator.
-        -- WAC, 340B-CP, 340B-CE rows included unconditionally;
-        -- all others only when WAC_WEIGHTED is valid (not null, > 0).
-        SUM(CASE
-                WHEN n.ACCT_CLASSIFICATION IN ('WAC', '340B-CP', '340B-CE') THEN n.TOTAL_NET_COS
-                WHEN n.WAC_WEIGHTED IS NOT NULL AND n.WAC_WEIGHTED > 0      THEN n.TOTAL_NET_COS
-                ELSE NULL
-            END)
-        / NULLIF(SUM(CASE
-                WHEN n.ACCT_CLASSIFICATION IN ('WAC', '340B-CP', '340B-CE') THEN n.TOTAL_SLS_QTY
-                WHEN n.WAC_WEIGHTED IS NOT NULL AND n.WAC_WEIGHTED > 0      THEN n.TOTAL_SLS_QTY
-                ELSE NULL
-            END), 0)                     AS contract_price,
-
-        SUM(n.WAC_WEIGHTED * n.TOTAL_SLS_QTY)
-            / NULLIF(SUM(CASE WHEN n.WAC_WEIGHTED IS NOT NULL
-                              THEN n.TOTAL_SLS_QTY END), 0)
-                                         AS wac_weighted,
-
-        -- Fixed wac_spread — denominator is WAC × qty (not plain WAC sum).
-        SUM(CASE
-                WHEN n.ACCT_CLASSIFICATION IN ('WAC', '340B-CP', '340B-CE') THEN n.TOTAL_NET_COS
-                WHEN n.WAC_WEIGHTED IS NOT NULL AND n.WAC_WEIGHTED > 0      THEN n.TOTAL_NET_COS
-                ELSE NULL
-            END)
-        / NULLIF(SUM(CASE
-                WHEN n.WAC_WEIGHTED IS NOT NULL AND n.WAC_WEIGHTED > 0
-                THEN n.WAC_WEIGHTED * n.TOTAL_SLS_QTY
-            END), 0) - 1                 AS wac_spread
-
-    FROM normalized n
-    GROUP BY
-        n.cal_month_start_dt,
-        n.YEAR_MONTH,
-        n.CUST_SEGMENT,
-        n.ACCT_CLASSIFICATION,
-        n.account_class_cd,
-        n.CUST_PROD_CATEGORY,
-        n.NATIONAL_GRP_ID,
-        n.NATIONAL_GRP_DESC,
-        n.MTRL_NUM,
-        n.sap_cust_num_trim,
-        n.sap_key,
-        n.l2_key,
-        n.nat_key,
-        n.sap_key_desc,
-        n.l2_key_desc,
-        n.nat_key_desc,
-        n.subset_l2_id_resolved,
-        n.subset_l2_desc_resolved,
-        n.subset_l2_desc_source
-),
-
-/* =========================================================
-   Tier assignment
-   ========================================================= */
-tiered AS (
-    SELECT
-        a.*,
-        sc.sap_months,
-        lc.l2_months,
-        CASE
-            WHEN sc.sap_months >= 6 THEN 'SAP_CUST'
-            WHEN lc.l2_months  >= 6 THEN 'L2'
-            ELSE 'NATIONAL_GRP_FALLBACK'
-        END AS MODEL_TIER,
-        CASE
-            WHEN sc.sap_months >= 6 THEN a.sap_key
-            WHEN lc.l2_months  >= 6 THEN a.l2_key
-            ELSE                         a.nat_key
-        END AS HYBRID_MODEL_KEY_3T,
-        CASE
-            WHEN sc.sap_months >= 6 THEN a.sap_key_desc
-            WHEN lc.l2_months  >= 6 THEN a.l2_key_desc
-            ELSE                         a.nat_key_desc
-        END AS HYBRID_MODEL_KEY_3T_DESC
-    FROM agg a
-    LEFT JOIN sap_coverage sc ON sc.sap_key = a.sap_key
-    LEFT JOIN l2_coverage  lc ON lc.l2_key  = a.l2_key
-),
-
-/* =========================================================
-   Pass 1 flags
-   =========================================================
-   FLAG TAXONOMY (v20):
-
-   exclude_from_actuals_flag  — business quality gate.
-     = 1 when: zombie_sale_flag = 1
-     Independent of training flag.
-
-   zombie_sale_flag  — visibility alias; also drives actuals exclusion.
-
-   invalid_wac_flag  — visibility only; also feeds training exclusion
-     in pass2_flags via two-pass design.
-     Condition: wac_weighted IS NULL OR wac_weighted < 0
-
-   contract_price_above_wac_flag  — visibility only.
-
-   prelim_exclude_from_training  — WAC/ceiling checks only.
-     Used to define clean series population for series_stats.
-     NOT the final training flag; see pass2_flags.
-   ========================================================= */
 pass1_flags AS (
     SELECT
-        t.*,
+        n.*,
+
+        CASE WHEN TOTAL_ZOMBIE_SALES > 0 THEN 1 ELSE 0 END AS exclude_from_actuals_flag,
+        CASE WHEN TOTAL_ZOMBIE_SALES > 0 THEN 1 ELSE 0 END AS zombie_sale_flag,
 
         CASE
-            WHEN TOTAL_ZOMBIE_SALES > 0 THEN 1
-            ELSE 0
-        END AS exclude_from_actuals_flag,
-
-        CASE
-            WHEN TOTAL_ZOMBIE_SALES > 0 THEN 1
-            ELSE 0
-        END AS zombie_sale_flag,
-
-        CASE
-            WHEN wac_weighted IS NULL OR wac_weighted < 0 THEN 1
+            WHEN WAC_WEIGHTED IS NULL OR WAC_WEIGHTED < 0 THEN 1
             ELSE 0
         END AS invalid_wac_flag,
 
         CASE
-            WHEN acct_classification IN ('WAC','340B-CP','340B-CE') THEN 0
-            WHEN wac_weighted IS NULL OR wac_weighted < 0           THEN 0
-            WHEN contract_price > wac_weighted * 1.05               THEN 1
+            WHEN ACCT_CLASSIFICATION IN ('WAC','340B-CP','340B-CE') THEN 0
+            WHEN WAC_WEIGHTED IS NULL OR WAC_WEIGHTED < 0           THEN 0
+            WHEN CONTRACT_PRICE > WAC_WEIGHTED * 1.05               THEN 1
             ELSE 0
         END AS contract_price_above_wac_flag,
 
         CASE
-            WHEN acct_classification IN ('340B-CP','340B-CE')       THEN 0
-            WHEN acct_classification = 'WAC'
-             AND wac_spread < -0.10                                 THEN 1
-            WHEN acct_classification = 'WAC'                        THEN 0
-            WHEN wac_weighted IS NOT NULL AND wac_weighted > 0
-             AND contract_price > wac_weighted * 1.50               THEN 1
-            WHEN wac_weighted IS NOT NULL AND wac_weighted > 0
-             AND contract_price < wac_weighted * 0.01               THEN 1
-            -- WHEN wac_weighted IS NOT NULL AND wac_weighted > 0
-            --  AND contract_price > wac_weighted * 1.05               THEN 1
+            WHEN ACCT_CLASSIFICATION IN ('340B-CP','340B-CE')                   THEN 0
+            WHEN ACCT_CLASSIFICATION = 'WAC' AND WAC_SPREAD < -0.10             THEN 1
+            WHEN ACCT_CLASSIFICATION = 'WAC'                                    THEN 0
+            WHEN WAC_WEIGHTED IS NOT NULL AND WAC_WEIGHTED > 0
+             AND CONTRACT_PRICE > WAC_WEIGHTED * 1.50                           THEN 1
+            WHEN WAC_WEIGHTED IS NOT NULL AND WAC_WEIGHTED > 0
+             AND CONTRACT_PRICE < WAC_WEIGHTED * 0.01                           THEN 1
+            WHEN WAC_WEIGHTED IS NOT NULL AND WAC_WEIGHTED > 0
+             AND CONTRACT_PRICE > WAC_WEIGHTED * 1.05                           THEN 1
             ELSE 0
         END AS prelim_exclude_from_training
 
-    FROM tiered t
+    FROM normalized n
 ),
 
 /* =========================================================
-   Series statistics
-   Population: prelim_exclude_from_training = 0
+   Series statistics — partitioned by groupby_key
    ========================================================= */
 series_stats AS (
     SELECT
         f.*,
-        HYBRID_MODEL_KEY_3T AS groupby_key,
 
         PERCENTILE(
-            CASE WHEN prelim_exclude_from_training = 0 THEN contract_price END,
+            CASE WHEN prelim_exclude_from_training = 0 THEN CONTRACT_PRICE END,
             0.5
-        ) OVER (
-            PARTITION BY HYBRID_MODEL_KEY_3T, MTRL_NUM
-        ) AS median_contract_price,
+        ) OVER (PARTITION BY groupby_key)               AS median_contract_price,
 
         STDDEV_SAMP(
-            CASE WHEN prelim_exclude_from_training = 0 THEN contract_price END
-        ) OVER (
-            PARTITION BY HYBRID_MODEL_KEY_3T, MTRL_NUM
-        ) AS stddev_contract_price,
+            CASE WHEN prelim_exclude_from_training = 0 THEN CONTRACT_PRICE END
+        ) OVER (PARTITION BY groupby_key)               AS stddev_contract_price,
 
         COUNT(
             CASE WHEN prelim_exclude_from_training = 0 THEN 1 END
-        ) OVER (
-            PARTITION BY HYBRID_MODEL_KEY_3T, MTRL_NUM
-        ) AS valid_time_series_points
+        ) OVER (PARTITION BY groupby_key)               AS valid_time_series_points
 
     FROM pass1_flags f
 ),
 
-/* =========================================================
-   Outlier flagging — visibility only
-   contract_price_outlier_flag feeds pass2_flags.
-   ========================================================= */
 outlier_flagged AS (
     SELECT
         s.*,
@@ -805,7 +611,7 @@ outlier_flagged AS (
             WHEN valid_time_series_points     < 3  THEN 0
             WHEN stddev_contract_price IS NULL     THEN 0
             WHEN stddev_contract_price = 0         THEN 0
-            WHEN ABS(contract_price - median_contract_price)
+            WHEN ABS(CONTRACT_PRICE - median_contract_price)
                  > 2 * stddev_contract_price       THEN 1
             ELSE 0
         END AS contract_price_outlier_flag,
@@ -816,7 +622,7 @@ outlier_flagged AS (
                     valid_time_series_points < 6
                  OR stddev_contract_price IS NULL
                  OR stddev_contract_price = 0
-                 OR ABS(contract_price - median_contract_price)
+                 OR ABS(CONTRACT_PRICE - median_contract_price)
                     <= 3 * stddev_contract_price
                  )
                 THEN 1
@@ -826,11 +632,6 @@ outlier_flagged AS (
     FROM series_stats s
 ),
 
-/* =========================================================
-   Pass 2 flags — final training exclusion
-   Combines WAC/ceiling (pass1) + invalid_wac + outlier.
-   Fully independent of exclude_from_actuals_flag.
-   ========================================================= */
 pass2_flags AS (
     SELECT
         o.*,
@@ -846,108 +647,98 @@ pass2_flags AS (
 ),
 
 /* =========================================================
-   Average contract price — window aggregates
+   Average contract price — partitioned by groupby_key
    ========================================================= */
 avg_stats AS (
     SELECT
         p.*,
 
-        AVG(CASE WHEN include_in_avg_contract_price_flag = 1 THEN contract_price END)
-            OVER (PARTITION BY groupby_key, MTRL_NUM)
+        AVG(CASE WHEN include_in_avg_contract_price_flag = 1 THEN CONTRACT_PRICE END)
+            OVER (PARTITION BY groupby_key)
             AS avg_contract_price_excl_outliers,
 
         SUM(CASE WHEN include_in_avg_contract_price_flag = 1 THEN TOTAL_NET_COS END)
-            OVER (PARTITION BY groupby_key, MTRL_NUM)
+            OVER (PARTITION BY groupby_key)
         / NULLIF(
             SUM(CASE WHEN include_in_avg_contract_price_flag = 1 THEN TOTAL_SLS_QTY END)
-                OVER (PARTITION BY groupby_key, MTRL_NUM),
+                OVER (PARTITION BY groupby_key),
           0)
             AS qty_weighted_avg_contract_price_excl_outliers,
 
         COUNT(CASE WHEN include_in_avg_contract_price_flag = 1 THEN 1 END)
-            OVER (PARTITION BY groupby_key, MTRL_NUM)
+            OVER (PARTITION BY groupby_key)
             AS months_used_in_avg_contract_price,
 
         COUNT(CASE WHEN contract_price_outlier_flag = 1 THEN 1 END)
-            OVER (PARTITION BY groupby_key, MTRL_NUM)
+            OVER (PARTITION BY groupby_key)
             AS months_excluded_as_contract_price_outliers
 
     FROM pass2_flags p
 ),
 
 /* =========================================================
-   MoM lag extraction
-   Lags both contract_price and wac_spread to support
-   wac_spread_mom_abs_change in mom_flags below.
+   MoM lag extraction — ordered within groupby_key
    ========================================================= */
 mom_lagged AS (
     SELECT
         a.*,
-        LAG(contract_price) OVER (
-            PARTITION BY HYBRID_MODEL_KEY_3T, MTRL_NUM
+        LAG(CONTRACT_PRICE) OVER (
+            PARTITION BY groupby_key
             ORDER BY cal_month_start_dt
         ) AS prev_cp,
-        LAG(wac_weighted) OVER (
-            PARTITION BY HYBRID_MODEL_KEY_3T, MTRL_NUM
+        LAG(WAC_WEIGHTED) OVER (
+            PARTITION BY groupby_key
             ORDER BY cal_month_start_dt
         ) AS prev_wac,
-        LAG(wac_spread) OVER (
-            PARTITION BY HYBRID_MODEL_KEY_3T, MTRL_NUM
+        LAG(WAC_SPREAD) OVER (
+            PARTITION BY groupby_key
             ORDER BY cal_month_start_dt
         ) AS prev_wac_spread
     FROM avg_stats a
 ),
 
-/* =========================================================
-   MoM price movement flags
-   ========================================================= */
 mom_flags AS (
     SELECT
         m.*,
         prev_cp                                             AS prev_month_contract_price,
         prev_wac                                            AS prev_month_wac_weighted,
 
-        (contract_price - prev_cp)
+        (CONTRACT_PRICE - prev_cp)
             / NULLIF(prev_cp, 0)                            AS contract_price_mom_pct_change,
 
         CASE
-            WHEN prev_cp IS NULL                                            THEN NULL
-            WHEN (contract_price - prev_cp) / NULLIF(prev_cp, 0) <= -0.30  THEN 1
+            WHEN prev_cp IS NULL                                                    THEN NULL
+            WHEN (CONTRACT_PRICE - prev_cp) / NULLIF(prev_cp, 0) <= -0.30          THEN 1
             ELSE 0
         END AS contract_price_drop_30pct_flag,
 
         CASE
-            WHEN prev_cp IS NULL                                            THEN NULL
-            WHEN (contract_price - prev_cp) / NULLIF(prev_cp, 0) >= 0.30   THEN 1
+            WHEN prev_cp IS NULL                                                    THEN NULL
+            WHEN (CONTRACT_PRICE - prev_cp) / NULLIF(prev_cp, 0) >= 0.30           THEN 1
             ELSE 0
         END AS contract_price_inc_30pct_flag,
 
         CASE
             WHEN prev_cp IS NULL          THEN NULL
-            WHEN contract_price > prev_cp THEN 'INCREASE'
-            WHEN contract_price < prev_cp THEN 'DECREASE'
+            WHEN CONTRACT_PRICE > prev_cp THEN 'INCREASE'
+            WHEN CONTRACT_PRICE < prev_cp THEN 'DECREASE'
             ELSE 'FLAT'
         END AS contract_price_mom_direction,
 
         CASE
             WHEN prev_wac IS NULL        THEN NULL
-            WHEN wac_weighted < prev_wac THEN 1
+            WHEN WAC_WEIGHTED < prev_wac THEN 1
             ELSE 0
         END AS wac_mom_decrease_flag,
 
-        (wac_weighted - prev_wac)
+        (WAC_WEIGHTED - prev_wac)
             / NULLIF(prev_wac, 0)                           AS wac_mom_pct_change,
 
-        -- Absolute WAC spread MoM change.
-        -- Pulled directly in step 3 training; eliminates recompute there.
-        wac_spread - prev_wac_spread                        AS wac_spread_mom_abs_change
+        WAC_SPREAD - prev_wac_spread                        AS wac_spread_mom_abs_change
 
     FROM mom_lagged m
 )
 
-/* =========================================================
-   Final output
-   ========================================================= */
 SELECT
     m.*,
     CASE

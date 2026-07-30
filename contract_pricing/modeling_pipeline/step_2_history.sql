@@ -1,55 +1,43 @@
--- =========================================================
--- STEP 2: HISTORY PROFILE v20
---
--- Changes from v18:
---   - Source updated to contract_price_modeling_base_v20
---   - All CTEs (first_row, last_row, agg) now filter
---     exclude_from_training_flag = 0 so history metrics
---     reflect only training-clean rows
---   - months_with_history counts training-clean months only
---   - avg/median contract price, wac spread, qty, net_cos
---     all computed on training-clean rows only
---   - top_100_brand_flag pre-materialized here by SUM(WAC)
---     across training-clean rows per brand; consumed in
---     step 5b without re-aggregation
--- =========================================================
 
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_history_profile_v20 AS
+-- =========================================================
+-- STEP 2: HISTORY PROFILE v21
+-- groupby_key replaces sap_cust_num_trim+mtrl_num partitions
+-- =========================================================
+ 
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_history_profile_v21 AS
 WITH base AS (
     SELECT *
-    FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v20
+    FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v21
     WHERE exclude_from_training_flag = 0
 ),
-
+ 
 ranked AS (
     SELECT
         b.*,
         ROW_NUMBER() OVER (
-            PARTITION BY b.HYBRID_MODEL_KEY_3T, b.mtrl_num
+            PARTITION BY b.groupby_key
             ORDER BY b.cal_month_start_dt ASC
         ) AS rn_first,
         ROW_NUMBER() OVER (
-            PARTITION BY b.HYBRID_MODEL_KEY_3T, b.mtrl_num
+            PARTITION BY b.groupby_key
             ORDER BY b.cal_month_start_dt DESC
         ) AS rn_last
     FROM base b
 ),
-
+ 
 first_row AS (
     SELECT
-        HYBRID_MODEL_KEY_3T,
-        mtrl_num,
+        groupby_key,
         cal_month_start_dt AS first_month,
         contract_price     AS first_contract_price,
         wac_spread         AS first_wac_spread
     FROM ranked
     WHERE rn_first = 1
 ),
-
+ 
 last_row AS (
     SELECT
-        HYBRID_MODEL_KEY_3T,
-        mtrl_num,
+        groupby_key,
         cal_month_start_dt AS last_month,
         contract_price     AS last_contract_price,
         wac_spread         AS last_wac_spread,
@@ -58,19 +46,23 @@ last_row AS (
     FROM ranked
     WHERE rn_last = 1
 ),
-
+ 
 agg AS (
     SELECT
-        HYBRID_MODEL_KEY_3T,
-        MAX(MODEL_TIER)             AS MODEL_TIER,
-        MAX(sap_months)             AS SAP_MONTHS,
-        MAX(l2_months)              AS L2_MONTHS,
-        mtrl_num,
+        groupby_key,
+        MAX(sap_months)             AS sap_months,
+        MAX(l2_months)              AS l2_months,
+        MAX(sap_cust_num_trim)      AS sap_cust_num_trim,
+        MAX(mtrl_num)               AS mtrl_num,
         MAX(CUST_SEGMENT)           AS cust_segment,
         MAX(ACCT_CLASSIFICATION)    AS acct_classification,
         MAX(CUST_PROD_CATEGORY)     AS cust_prod_category,
         MAX(NATIONAL_GRP_ID)        AS national_grp_id,
         MAX(NATIONAL_GRP_DESC)      AS national_grp_desc,
+        MAX(COMMON_GRP_ID)          AS common_grp_id,
+        MAX(COMMON_GRP_DESC)        AS common_grp_desc,
+        MAX(subset_l2_id_resolved)  AS subset_l2_id_resolved,
+        MAX(subset_l2_desc_resolved)AS subset_l2_desc_resolved,
         MAX(BRAND_NAME)             AS brand_name,
         MAX(MTRL_NME_NVGTON)        AS mtrl_nme_nvgton,
         MAX(ndc_num)                AS ndc_num,
@@ -79,8 +71,9 @@ agg AS (
         MAX(manufacturer_id)        AS manufacturer_id,
         MAX(manufacturer_name)      AS manufacturer_name,
         MAX(final_product_group)    AS final_product_group,
-
-        -- All metrics below are training-clean only (base filtered above)
+        MAX(CUST_NAME)              AS cust_name,
+        MAX(CUST_ID)                AS cust_id,
+ 
         COUNT(DISTINCT cal_month_start_dt)          AS months_with_history,
         AVG(contract_price)                         AS avg_contract_price,
         percentile_approx(contract_price, 0.5)      AS median_contract_price,
@@ -89,15 +82,9 @@ agg AS (
         AVG(total_sls_qty)                          AS avg_monthly_qty,
         AVG(total_net_cos)                          AS avg_monthly_net_cos
     FROM base
-    GROUP BY
-        HYBRID_MODEL_KEY_3T,
-        mtrl_num
+    GROUP BY groupby_key
 ),
-
-/* =========================================================
-   top_100_brands — pre-materialized for step 5b consumption.
-   Ranked by SUM(WAC) across training-clean rows per brand.
-   ========================================================= */
+ 
 brand_wac_totals AS (
     SELECT
         brand_name,
@@ -106,7 +93,7 @@ brand_wac_totals AS (
     WHERE brand_name IS NOT NULL
     GROUP BY brand_name
 ),
-
+ 
 top_100_brands AS (
     SELECT
         brand_name,
@@ -114,7 +101,7 @@ top_100_brands AS (
     FROM brand_wac_totals
     QUALIFY brand_wac_rank <= 100
 )
-
+ 
 SELECT
     a.*,
     f.first_month,
@@ -125,32 +112,25 @@ SELECT
     l.last_wac_spread,
     l.last_total_sls_qty,
     l.last_total_net_cos,
-
+ 
     CAST(months_between(l.last_month, f.first_month) AS INT) + 1 AS lifecycle_length_months,
-
+ 
     CASE
         WHEN a.months_with_history < 6  THEN 'VERY_LOW_HISTORY'
         WHEN a.months_with_history < 12 THEN 'LOW_HISTORY'
         WHEN a.months_with_history < 24 THEN 'MEDIUM_HISTORY'
         ELSE 'HIGH_HISTORY'
     END AS history_bucket,
-
+ 
     CASE WHEN a.months_with_history < 12  THEN 1 ELSE 0 END AS is_short_history_flag,
     CASE WHEN a.months_with_history >= 12 THEN 1 ELSE 0 END AS has_min_12m_history_flag,
     CASE WHEN a.months_with_history >= 24 THEN 1 ELSE 0 END AS has_min_24m_history_flag,
-
-    -- top_100_brand_flag: 1 if brand is in top 100 by SUM(WAC)
-    -- across training-clean rows. Used in step 5b eval thresholds.
+ 
     CASE WHEN t.brand_name IS NOT NULL THEN 1 ELSE 0 END    AS top_100_brand_flag,
     t.brand_wac_rank
-
+ 
 FROM agg a
-LEFT JOIN first_row f
-    ON a.HYBRID_MODEL_KEY_3T = f.HYBRID_MODEL_KEY_3T
-   AND a.mtrl_num = f.mtrl_num
-LEFT JOIN last_row l
-    ON a.HYBRID_MODEL_KEY_3T = l.HYBRID_MODEL_KEY_3T
-   AND a.mtrl_num = l.mtrl_num
-LEFT JOIN top_100_brands t
-    ON a.brand_name = t.brand_name
+LEFT JOIN first_row f ON a.groupby_key = f.groupby_key
+LEFT JOIN last_row  l ON a.groupby_key = l.groupby_key
+LEFT JOIN top_100_brands t ON a.brand_name = t.brand_name
 ;
