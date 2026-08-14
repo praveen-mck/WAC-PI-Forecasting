@@ -12,6 +12,14 @@
 --     (pre-computed there; derived inline logic removed)
 --   - avg_yoy_pct standardized name carried forward
 -- groupby_key as join key; all renamed calendar/fiscal cols
+--
+-- Fix D:
+--   - CEIL(horizon / 3.0) replaced with ROUND(horizon / 3.0, 0)
+--     in both forecasted_contract_price and forecasted_net_cos.
+--     CEIL was systematically over-compounding by rounding every
+--     partial quarter up to the next full quarter, producing
+--     upward bias that grew with forecast horizon. ROUND applies
+--     the nearest quarter boundary instead.
 -- =========================================================
  
 CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_forecast_v21 AS
@@ -69,7 +77,7 @@ SELECT
             ma.forecast_start_contract_price
             * POWER(
                 1 + COALESCE(ma.expected_monthly_trend_pct, 0),
-                CEIL(fm.forecast_horizon_month_num / 3.0)
+                LEAST(ROUND(fm.forecast_horizon_month_num / 3.0, 0),8)
             ), 0)
     END                                                 AS forecasted_contract_price,
  
@@ -81,7 +89,7 @@ SELECT
             ma.forecast_start_contract_price
             * POWER(
                 1 + COALESCE(ma.expected_monthly_trend_pct, 0),
-                CEIL(fm.forecast_horizon_month_num / 3.0)
+                ROUND(fm.forecast_horizon_month_num / 3.0, 0)
             ), 0) * COALESCE(ma.forecast_start_total_sls_qty, 0)
     END                                                 AS forecasted_net_cos
  
@@ -89,4 +97,3 @@ FROM uspd_analytics_den.analytics_gold.contract_price_future_months_v21 fm
 JOIN uspd_analytics_den.analytics_gold.contract_price_material_assumptions_v21 ma
   ON fm.groupby_key = ma.groupby_key
 ;
- 

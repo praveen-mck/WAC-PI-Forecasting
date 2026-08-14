@@ -1,17 +1,17 @@
 
 -- =========================================================
--- STEP 6: FUTURE MONTHS v21
+-- STEP 6: FUTURE MONTHS v23
 -- groupby_key carried through; fixed jump-off parametized
 -- =========================================================
  
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_future_months_v21 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_future_months_v23 AS
 WITH params AS (
     SELECT TO_DATE('2025-08-01') AS jump_off_dt
 ),
  
 base AS (
     SELECT groupby_key, sap_cust_num_trim, mtrl_num, anchor_month
-    FROM uspd_analytics_den.analytics_gold.contract_price_material_assumptions_v21
+    FROM uspd_analytics_den.analytics_gold.contract_price_material_assumptions_v23
 ),
  
 expanded AS (

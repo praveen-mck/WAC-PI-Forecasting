@@ -1,13 +1,13 @@
 
 -- =========================================================
--- STEP 2: HISTORY PROFILE v21
+-- STEP 2: HISTORY PROFILE v23
 -- groupby_key replaces sap_cust_num_trim+mtrl_num partitions
 -- =========================================================
  
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_history_profile_v21 AS
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_history_profile_v23 AS
 WITH base AS (
     SELECT *
-    FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v21
+    FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v23
     WHERE exclude_from_training_flag = 0
 ),
  
