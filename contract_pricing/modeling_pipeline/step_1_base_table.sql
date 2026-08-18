@@ -25,88 +25,42 @@
 --     the real sub-ceiling 340B price. Sub-ceiling rows are
 --     kept for training and actuals as normal.
 --   - EXTREME_REGIME_CHANGE (27,444 series, ratio > 100x):
---     All rows excluded from both training and actuals.
---     Near-zero sub-ceiling prices (e.g. $0.01 vs $500 WAC)
---     are anomalous and produce meaningless forecasts.
+--     Flagged only via regime_change_type for downstream use.
+--     Included in training and actuals for complete dollar
+--     reconciliation against COPA.
 --   - regime_change_type column added to pass1_flags output
 --     for downstream diagnostics and monitoring.
 --
 -- Bug fixes (v23 patch):
 --   Fix 1 — NULL rows excluded at source in base_material_key.
---     vw_pharma_profitability_actuals_fpa contains null-financial
---     rows (NET_COS IS NULL, SLS_QTY_BEX IS NULL) that pass the
---     SLS_QTY_BEX > 0 filter because NULL > 0 evaluates to NULL
---     in SQL (not FALSE), so null rows are not excluded. These
---     null rows were the primary source of the ~62M duplicate
---     rows identified in the view (838M total vs 777M distinct).
---     They also fan out across FPA_CUST_SEG_CD values, producing
---     multiple rows per series-month in base_agg. Explicit IS NOT
---     NULL and > 0 filters added for both NET_COS and SLS_QTY_BEX.
---   Fix 5 — Negative NET_COS excluded at source in base_material_key.
---     Returns and credits produce negative NET_COS rows that
---     distort contract price calculations. Added NET_COS > 0
---     filter to exclude them before any joins or aggregation.
---     HAVING clause simplified to SUM(NET_COS) > 0 since
---     negative values can no longer reach base_agg.
---   Fix 6 — EXTREME_REGIME_CHANGE series no longer excluded
---     from training or actuals. These series are now flagged
---     only via regime_change_type = 'EXTREME_REGIME_CHANGE'
---     so that dollar reconciliation against COPA is complete.
---     Downstream consumers can filter on regime_change_type
---     to exclude from model evaluation as needed.
---   Fix 7 — mixed_regime_flag CTE moved from normalized to
---     base_layer (pre-aggregation). base_agg blends zombie
---     WAC-ceiling and vendor contract transactions into a
---     single monthly contract_price, masking extreme price
---     ratios. A series with $645 zombie price and $0.24
---     real contracted price appeared as ~2x after blending
---     instead of 2,690x at transaction level, causing
---     misclassification as NORMAL_REGIME_CHANGE instead of
---     EXTREME_REGIME_CHANGE. Fix uses CONTRACT_TYPE (available
---     pre-aggregation) instead of WAC_SPREAD/TOTAL_ZOMBIE_SALES
---     to identify transaction types, and reconstructs
---     groupby_key from base_layer dimensions using the same
---     logic as the normalized CTE for correct JOIN matching.
---   Fix 2 — CONTRACT_TYPE removed from GROUP BY ALL in base_agg.
---     A single customer+material+month can have both
---     'Vendor Contract' and 'Non-Vendor Contract' transactions
---     in COPA, which caused base_agg to produce multiple rows
---     per series-month, inflating all downstream aggregations
---     by 2-4x. CONTRACT_TYPE is now demoted to MAX().
+--   Fix 2 — CONTRACT_TYPE removed from GROUP BY in base_agg.
 --   Fix 3 — CUST_SEGMENT_CD removed from GROUP BY in base_agg.
---     Customers can transition between segment codes A and B
---     (both map to CP&H) within the same month, producing two
---     rows with the same groupby_key. CUST_SEGMENT_CD demoted
---     to MAX() — both A and B are CP&H so MAX('B','A')='B'
---     has no downstream impact on CUST_SEGMENT or groupby_key.
---   Fix 4 — Full defensive MAX() demotion applied to all
---     non-dimension columns in base_agg GROUP BY. SAP_CUST_NUM,
---     NDC_NUM, MTRL_NME_NVGTON, CUST_ID, CUST_ID_trim,
---     CUST_NAME, MANUFACTURER_NAME, NATIONAL_GRP_ID/DESC,
---     SUBSET_L2_DESC, COMMON_GRP_DESC, CHAIN_DESC, BRAND_NAME,
---     PRODUCT_FAMILY, THERAPEUTIC_CLASS, account_class_cd, and
---     BILL_TYPE all demoted to MAX(). GROUP BY now contains only
---     the 10 true series dimension columns. Prevents future
---     fan-out if any attribute column gains variant values.
---   - GROUP BY ALL replaced with an explicit column list.
+--   Fix 4 — Full defensive MAX() demotion in base_agg.
+--   Fix 5 — Negative NET_COS excluded at source.
+--   Fix 6 — EXTREME_REGIME_CHANGE no longer excluded from
+--     training or actuals; flagged only via regime_change_type.
+--   Fix 7 — mixed_regime_flag CTE moved from normalized to
+--     base_layer (pre-aggregation).
+--   Fix 8 (new) — COALESCE(TOTAL_ZOMBIE_SALES, 0) added in
+--     prelim_exclude_from_training to guard against NULL
+--     TOTAL_ZOMBIE_SALES on WAC-ceiling rows.
+--   Fix 9 (new) — Redundant WHERE filters (SLS_QTY_BEX > 0,
+--     IS NOT NULL) removed from base_layer; already applied
+--     in base_material_key. Comment updated accordingly.
+--   Fix 10 (new) — Duplicate comment block on base_agg removed.
+--
 -- Performance optimizations (v23 patch):
 --   Opt 1 — All WHERE filters pushed into base_material_key.
---     POST_DT, CMPNY_CD, BUS_TYPE_CD, BILL_TYPE_CD, and
---     FPA_CUST_SEG_CD filters previously applied in base_layer
---     after the full view scan and all dimension joins. Moving
---     them to base_material_key filters the source view once
---     at the earliest point, before any joins occur, reducing
---     rows flowing through every subsequent CTE.
 --   Opt 2 — Duplicate WAC column removed from base_agg.
---     WAC and WAC_WEIGHTED were computed identically. WAC
---     removed; WAC_WEIGHTED retained as the canonical column.
 --   Opt 3 — dim_cust_acct_curr pre-filtered in subquery.
---     ACTIVE_CUST_IND = 'A' filter pushed into a subquery
---     so the join operates on the filtered set rather than
---     scanning the full dimension table.
---   Opt 4 — MTRL_NUM_STD carried forward as MTRL_NUM from
---     base_material_key rather than recomputed via
---     REGEXP_REPLACE in base_agg on every row.
+--   Opt 4 — MTRL_NUM_STD carried forward from base_material_key.
+--
+-- Known issue (tracked):
+--   mixed_regime_flag groupby_key is reconstructed from
+--   base_layer dimensions pre-aggregation. In transition months
+--   where CUST_SEGMENT_CD has both A and B values, the resolved
+--   subset_l2_id may differ from normalized (which uses MAX()
+--   post-aggregation). QA query Q_S1_4 below validates match rate.
 -- =========================================================
 
 CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_modeling_base_v23 AS
@@ -129,7 +83,7 @@ base_material_key AS (
       AND t_copa.SLS_QTY_BEX > 0
       AND t_copa.NET_COS IS NOT NULL
       AND t_copa.NET_COS > 0            -- exclude negative net COS (returns/credits)
-      AND t_copa.POST_DT BETWEEN '2022-01-01' AND '2026-05-31'
+      AND t_copa.POST_DT BETWEEN '2022-01-01' AND '2026-07-31'
       AND t_copa.CMPNY_CD IN ('8000','8545')
       AND t_copa.BUS_TYPE_CD NOT IN ('18','19','20')
       AND t_copa.BILL_TYPE_CD IN ('ZPD1','ZPD5','ZPDS','ZPF2','ZPS1','ZPS3','ZPS6','ZPS7')
@@ -395,7 +349,6 @@ base_layer AS (
     LEFT  JOIN ndc                 ON ic.NDC_NUM = ndc.NDC_NUM
     LEFT  JOIN vstx v              ON t.MTRL_NUM_STD = v.MTRL_NUM_STD
     LEFT  JOIN ahfs a              ON m.THRPTC_CLSS_CDE_CLEAN = a.THERA_CLS_CD_CLEAN
-    -- Pre-filter active customers before joining to reduce scan size
     INNER JOIN (
         SELECT
             CUST_ACCT_ID, NATL_GRP_NAM, NATL_GRP_CD, COMMON_GRP_ID,
@@ -406,27 +359,10 @@ base_layer AS (
     ) cust_mstr
         ON  LPAD(RIGHT(CAST(t.sap_cust_num AS STRING), 6), 6, '0')
           = LPAD(RIGHT(CAST(cust_mstr.CUST_ACCT_ID AS STRING), 6), 6, '0')
-    -- Filters already applied in base_material_key; only residual
-    -- constraints that depend on joined columns remain here
-    WHERE t.SLS_QTY_BEX > 0
-      AND t.SLS_QTY_BEX IS NOT NULL
+    -- No residual WHERE filters needed here — all row-level filters
+    -- were applied in base_material_key before joins.
 ),
 
-/* =========================================================
-   Base aggregation — grain is sap_cust_num_trim + mtrl_num
-   + all stable series dimensions per month.
-
-   FIX 2: CONTRACT_TYPE removed from GROUP BY and demoted to
-   MAX() aggregate. A single customer+material+month can
-   have both 'Vendor Contract' and 'Non-Vendor Contract'
-   COPA transactions (different SLS_CTGRY_CD values), which
-   caused GROUP BY ALL to produce 2-4 rows per series-month
-   and inflate all downstream sums by the same factor.
-   MAX() returns 'Vendor Contract' when both types coexist
-   (alphabetically dominant; also semantically correct since
-   the presence of any vendor contract activity is the
-   meaningful signal for pricing purposes).
-   ========================================================= */
 /* =========================================================
    Base aggregation — grain is the 10 true series dimensions
    per month. All other columns are attributes demoted to
@@ -460,40 +396,32 @@ base_agg AS (
         CHAIN_ID,
         SUBSET_L2_ID,
 
-        -- Transaction-level or slowly-changing attributes demoted to MAX()
-        -- to prevent fan-out when values vary within a series-month.
-        -- MAX() is safe here as these columns are descriptive only and
-        -- do not affect series identity, groupby_key, or financial sums.
-        MAX(SAP_CUST_NUM)           AS SAP_CUST_NUM,       -- raw unpadded, varies across invoice lines
-        MAX(CUST_SEGMENT_CD)        AS CUST_SEGMENT_CD,    -- A/B transition months both map to CP&H
-        MAX(CONTRACT_TYPE)          AS CONTRACT_TYPE,      -- vendor/non-vendor mixed months
-        MAX(NDC_NUM)                AS NDC_NUM,            -- primary NDC can change if item master updated
-        MAX(MTRL_NME_NVGTON)        AS MTRL_NME_NVGTON,    -- name field, minor variants possible
-        MAX(CUST_ID)                AS CUST_ID,            -- raw customer ID before padding
-        MAX(CUST_ID_trim)           AS CUST_ID_trim,       -- padded, defensive MAX
-        MAX(CUST_NAME)              AS CUST_NAME,          -- name field, trailing space variants
-        MAX(MANUFACTURER_NAME)      AS MANUFACTURER_NAME,  -- name field
-        MAX(NATIONAL_GRP_ID)        AS NATIONAL_GRP_ID,    -- hierarchy attribute not in series key
-        MAX(NATIONAL_GRP_DESC)      AS NATIONAL_GRP_DESC,  -- description field
-        MAX(SUBSET_L2_DESC)         AS SUBSET_L2_DESC,     -- description of subset_l2_id
-        MAX(COMMON_GRP_DESC)        AS COMMON_GRP_DESC,    -- description field
-        MAX(CHAIN_DESC)             AS CHAIN_DESC,         -- description field
-        MAX(BRAND_NAME)             AS BRAND_NAME,         -- attribute from NDC join
-        MAX(PRODUCT_FAMILY)         AS PRODUCT_FAMILY,     -- derived attribute
-        MAX(THERAPEUTIC_CLASS)      AS THERAPEUTIC_CLASS,  -- derived attribute
-        MAX(account_class_cd)       AS account_class_cd,   -- raw code backing ACCT_CLASSIFICATION
-        MAX(BILL_TYPE)              AS BILL_TYPE,          -- constant 'Invoice', defensive MAX
+        MAX(SAP_CUST_NUM)           AS SAP_CUST_NUM,
+        MAX(CUST_SEGMENT_CD)        AS CUST_SEGMENT_CD,
+        MAX(CONTRACT_TYPE)          AS CONTRACT_TYPE,
+        MAX(NDC_NUM)                AS NDC_NUM,
+        MAX(MTRL_NME_NVGTON)        AS MTRL_NME_NVGTON,
+        MAX(CUST_ID)                AS CUST_ID,
+        MAX(CUST_ID_trim)           AS CUST_ID_trim,
+        MAX(CUST_NAME)              AS CUST_NAME,
+        MAX(MANUFACTURER_NAME)      AS MANUFACTURER_NAME,
+        MAX(NATIONAL_GRP_ID)        AS NATIONAL_GRP_ID,
+        MAX(NATIONAL_GRP_DESC)      AS NATIONAL_GRP_DESC,
+        MAX(SUBSET_L2_DESC)         AS SUBSET_L2_DESC,
+        MAX(COMMON_GRP_DESC)        AS COMMON_GRP_DESC,
+        MAX(CHAIN_DESC)             AS CHAIN_DESC,
+        MAX(BRAND_NAME)             AS BRAND_NAME,
+        MAX(PRODUCT_FAMILY)         AS PRODUCT_FAMILY,
+        MAX(THERAPEUTIC_CLASS)      AS THERAPEUTIC_CLASS,
+        MAX(account_class_cd)       AS account_class_cd,
+        MAX(BILL_TYPE)              AS BILL_TYPE,
 
-        -- Financial aggregates
         SUM(ZOMBIE_SALE_FLAG)                                           AS TOTAL_ZOMBIE_SALES,
         SUM(NET_COS) / NULLIF(SUM(SLS_QTY_BEX), 0)                    AS CONTRACT_PRICE,
         SUM(NET_COS)                                                    AS TOTAL_NET_COS,
         SUM(SLS_QTY_BEX)                                                AS TOTAL_SLS_QTY,
         SUM(NET_REVENUE)                                                AS TOTAL_NET_REVENUE,
 
-        -- WAC_WEIGHTED is the canonical WAC column; duplicate WAC
-        -- column removed from base_agg (was computed identically).
-        -- WAC alias re-added in src CTE for downstream compatibility.
         SUM(CASE WHEN WAC IS NOT NULL AND SLS_QTY_BEX > 0 THEN WAC END)
             / NULLIF(SUM(CASE WHEN WAC IS NOT NULL AND SLS_QTY_BEX > 0 THEN SLS_QTY_BEX END), 0)
                                                                         AS WAC_WEIGHTED
@@ -510,18 +438,12 @@ base_agg AS (
         COMMON_GRP_ID,
         CHAIN_ID,
         SUBSET_L2_ID
-    HAVING SUM(NET_COS) > 0  -- simplified: negative NET_COS excluded at source in base_material_key
+    HAVING SUM(NET_COS) > 0
 ),
 
-/* =========================================================
-   Source filter — WAC_SPREAD computed here after
-   WAC_WEIGHTED is available
-   ========================================================= */
 src AS (
     SELECT
         *,
-        -- WAC alias added here so downstream CTEs referencing WAC
-        -- continue to work after the duplicate column was removed from base_agg
         WAC_WEIGHTED                                                    AS WAC,
         (TOTAL_NET_COS / NULLIF(WAC_WEIGHTED * TOTAL_SLS_QTY, 0)) - 1  AS WAC_SPREAD
     FROM base_agg
@@ -532,9 +454,6 @@ src AS (
       AND TOTAL_SLS_QTY     IS NOT NULL
 ),
 
-/* =========================================================
-   Coverage CTEs — informational only in v23
-   ========================================================= */
 sap_coverage AS (
     SELECT
         MTRL_NUM,
@@ -552,7 +471,10 @@ sap_coverage AS (
         CUST_PROD_CATEGORY
 ),
 
-l2_coverage AS (
+l2_coverage_raw AS (
+    -- Raw l2_months per CUST_SEGMENT_CD. CUST_SEGMENT_CD can have multiple values
+    -- (A and B both map to CP&H) within the same groupby_key, producing multiple
+    -- rows that fan out when joined in normalized. Deduplicated in l2_coverage below.
     SELECT
         MTRL_NUM,
         CUST_SEGMENT,
@@ -582,11 +504,30 @@ l2_coverage AS (
             END,
         'NA')
 ),
+l2_coverage AS (
+    -- Deduplicate to one row per (MTRL_NUM, CUST_SEGMENT, ACCT_CLASSIFICATION,
+    -- CUST_PROD_CATEGORY, subset_l2_id_resolved) — the dimensions used in the
+    -- normalized JOIN. CUST_SEGMENT_CD is dropped as a join key here; the
+    -- normalized join uses CUST_SEGMENT_CD from src which is MAX()'d in base_agg.
+    -- When A and B both exist for the same key, keep MAX(l2_months) = most coverage.
+    -- MAX(CUST_SEGMENT_CD) matches what base_agg produces so the join still works.
+    SELECT
+        MTRL_NUM,
+        CUST_SEGMENT,
+        MAX(CUST_SEGMENT_CD)        AS CUST_SEGMENT_CD,
+        ACCT_CLASSIFICATION,
+        CUST_PROD_CATEGORY,
+        subset_l2_id_resolved,
+        MAX(l2_months)              AS l2_months
+    FROM l2_coverage_raw
+    GROUP BY
+        MTRL_NUM,
+        CUST_SEGMENT,
+        ACCT_CLASSIFICATION,
+        CUST_PROD_CATEGORY,
+        subset_l2_id_resolved
+),
 
-/* =========================================================
-   Normalized — groupby_key defined here using all
-   7 series dimensions including subset_l2_id_resolved
-   ========================================================= */
 normalized AS (
     SELECT
         TO_DATE(CONCAT(s.YEAR_MONTH, '-01'))    AS cal_month_start_dt,
@@ -662,11 +603,9 @@ normalized AS (
             ELSE 'COMMON_GRP_DESC'
         END AS subset_l2_desc_source,
 
-        -- Informational sparsity signals
         sc.sap_months,
         lc.l2_months,
 
-        -- Series key across all 7 dimensions
         CONCAT_WS('|',
             COALESCE(s.sap_cust_num_trim,                       'NA'),
             COALESCE(s.MTRL_NUM,                                'NA'),
@@ -691,9 +630,12 @@ normalized AS (
         AND s.ACCT_CLASSIFICATION = sc.ACCT_CLASSIFICATION
         AND s.CUST_PROD_CATEGORY  = sc.CUST_PROD_CATEGORY
     LEFT JOIN l2_coverage lc
+        -- CUST_SEGMENT_CD removed from join: l2_coverage is now deduplicated
+        -- to one row per (MTRL_NUM, CUST_SEGMENT, ACCT_CLASSIFICATION,
+        -- CUST_PROD_CATEGORY, subset_l2_id_resolved). Including CUST_SEGMENT_CD
+        -- caused fan-out when A and B both existed for the same key.
         ON  s.MTRL_NUM            = lc.MTRL_NUM
         AND s.CUST_SEGMENT        = lc.CUST_SEGMENT
-        AND s.CUST_SEGMENT_CD     = lc.CUST_SEGMENT_CD
         AND s.ACCT_CLASSIFICATION = lc.ACCT_CLASSIFICATION
         AND s.CUST_PROD_CATEGORY  = lc.CUST_PROD_CATEGORY
         AND COALESCE(
@@ -707,33 +649,20 @@ normalized AS (
 
 /* =========================================================
    Mixed regime flag — computed from base_layer BEFORE
-   base_agg collapses rows. This is critical because base_agg
-   blends zombie WAC-ceiling transactions with real sub-ceiling
-   vendor contract rows into a single monthly contract_price,
-   masking extreme price ratios. For example, a series with
-   $645 zombie WAC price and $0.24 real contracted price
-   appears as ~2x after blending instead of 2,690x at the
-   transaction level — causing it to be misclassified as
-   NORMAL_REGIME_CHANGE instead of EXTREME_REGIME_CHANGE.
-
-   Computing from base_layer uses CONTRACT_TYPE (available
-   pre-aggregation) instead of WAC_SPREAD and TOTAL_ZOMBIE_SALES
-   (only available post-aggregation) to identify transaction
-   types. The groupby_key is reconstructed using the same
-   dimension logic as the normalized CTE so the LEFT JOIN
-   in pass1_flags matches correctly.
-
-   Two buckets:
-     NORMAL_REGIME_CHANGE  — zombie/vendor ratio <= 100x.
-       WAC-ceiling rows excluded from training so the model
-       learns the real sub-ceiling 340B contracted price.
-     EXTREME_REGIME_CHANGE — ratio > 100x. Flagged only via
-       regime_change_type. Included in training and actuals
-       for complete dollar reconciliation against COPA.
-       Downstream consumers filter on regime_change_type
-       to exclude from model evaluation as needed.
+   base_agg collapses rows. See Fix 7 header note.
+   Known issue: in transition months where CUST_SEGMENT_CD
+   has both A and B values, groupby_key reconstruction here
+   may differ from normalized. Validate with Q_S1_4 below.
    ========================================================= */
-mixed_regime_flag AS (
+mixed_regime_flag_raw AS (
+    -- Computes regime_change_type per transaction-level GROUP BY.
+    -- The GROUP BY is finer than groupby_key (includes CUST_SEGMENT_CD,
+    -- COMMON_GRP_ID, CHAIN_ID, SUBSET_L2_ID separately) because these are
+    -- needed to correctly identify zombie vs vendor rows at transaction level.
+    -- However, a single groupby_key can match multiple GROUP BY buckets when
+    -- a customer has transactions with different SUBSET_L2_ID or CUST_SEGMENT_CD
+    -- values — producing duplicate groupby_key rows with different regime_change_type.
+    -- Deduplication in mixed_regime_flag below collapses these to one row per key.
     SELECT
         CONCAT_WS('|',
             COALESCE(sap_cust_num_trim,                                     'NA'),
@@ -775,25 +704,32 @@ mixed_regime_flag AS (
         SUM(CASE WHEN CONTRACT_TYPE = 'Non-Vendor Contract' THEN 1 ELSE 0 END) > 0
     AND SUM(CASE WHEN CONTRACT_TYPE = 'Vendor Contract'     THEN 1 ELSE 0 END) > 0
 ),
+mixed_regime_flag AS (
+    -- Deduplicate to one row per groupby_key.
+    -- When a key has both NORMAL and EXTREME buckets (due to SUBSET_L2_ID or
+    -- CUST_SEGMENT_CD variation within the same key), keep EXTREME_REGIME_CHANGE
+    -- as the more conservative classification.
+    -- MAX() on the string 'NORMAL_REGIME_CHANGE' vs 'EXTREME_REGIME_CHANGE':
+    -- 'NORMAL' > 'EXTREME' alphabetically (N > E), so MAX returns NORMAL.
+    -- Use MIN() instead — MIN returns EXTREME, which is the conservative choice.
+    SELECT
+        groupby_key,
+        MIN(regime_change_type)                             AS regime_change_type
+    FROM mixed_regime_flag_raw
+    GROUP BY groupby_key
+),
 
 pass1_flags AS (
     SELECT
         n.*,
         COALESCE(mr.regime_change_type, 'NONE')         AS regime_change_type,
 
-        -- exclude_from_actuals_flag:
-        -- EXTREME_REGIME_CHANGE series are flagged via regime_change_type
-        -- but NOT excluded from actuals — rows are included so dollar
-        -- reconciliation against COPA is complete. Downstream consumers
-        -- can filter on regime_change_type = 'EXTREME_REGIME_CHANGE' if
-        -- they want to exclude these series from model evaluation.
-        -- Standard zombie sale logic applies for actuals exclusion.
         CASE
-            WHEN TOTAL_ZOMBIE_SALES > 0 THEN 1
+            WHEN COALESCE(n.TOTAL_ZOMBIE_SALES, 0) > 0 THEN 1
             ELSE 0
         END                                             AS exclude_from_actuals_flag,
 
-        CASE WHEN TOTAL_ZOMBIE_SALES > 0 THEN 1 ELSE 0 END AS zombie_sale_flag,
+        CASE WHEN COALESCE(n.TOTAL_ZOMBIE_SALES, 0) > 0 THEN 1 ELSE 0 END AS zombie_sale_flag,
 
         CASE
             WHEN WAC_WEIGHTED IS NULL OR WAC_WEIGHTED < 0 THEN 1
@@ -808,14 +744,11 @@ pass1_flags AS (
         END AS contract_price_above_wac_flag,
 
         CASE
-            -- NORMAL_REGIME_CHANGE: exclude only the WAC-ceiling rows
-            -- (wac_spread=0, zombie sales) from training so the model
-            -- trains on the real sub-ceiling 340B price instead.
-            -- EXTREME_REGIME_CHANGE: no longer excluded from training —
-            -- flagged via regime_change_type for downstream use only.
+            -- Fix 8: COALESCE guards against NULL TOTAL_ZOMBIE_SALES on
+            -- WAC-ceiling rows (SUM of 0 flags is 0, not NULL, but defensive).
             WHEN COALESCE(mr.regime_change_type, 'NONE') = 'NORMAL_REGIME_CHANGE'
              AND WAC_SPREAD = 0
-             AND TOTAL_ZOMBIE_SALES > 0
+             AND COALESCE(n.TOTAL_ZOMBIE_SALES, 0) > 0
             THEN 1
             WHEN ACCT_CLASSIFICATION IN ('340B-CP','340B-CE')                   THEN 0
             WHEN ACCT_CLASSIFICATION = 'WAC' AND WAC_SPREAD < -0.10             THEN 1
@@ -833,33 +766,25 @@ pass1_flags AS (
     LEFT JOIN mixed_regime_flag mr ON n.groupby_key = mr.groupby_key
 ),
 
-/* =========================================================
-   Series statistics — partitioned by groupby_key
-   ========================================================= */
 series_stats AS (
     SELECT
         f.*,
-
         PERCENTILE(
             CASE WHEN prelim_exclude_from_training = 0 THEN CONTRACT_PRICE END,
             0.5
         ) OVER (PARTITION BY groupby_key)               AS median_contract_price,
-
         STDDEV_SAMP(
             CASE WHEN prelim_exclude_from_training = 0 THEN CONTRACT_PRICE END
         ) OVER (PARTITION BY groupby_key)               AS stddev_contract_price,
-
         COUNT(
             CASE WHEN prelim_exclude_from_training = 0 THEN 1 END
         ) OVER (PARTITION BY groupby_key)               AS valid_time_series_points
-
     FROM pass1_flags f
 ),
 
 outlier_flagged AS (
     SELECT
         s.*,
-
         CASE
             WHEN prelim_exclude_from_training = 1  THEN 0
             WHEN valid_time_series_points     < 3  THEN 0
@@ -869,7 +794,6 @@ outlier_flagged AS (
                  > 2 * stddev_contract_price       THEN 1
             ELSE 0
         END AS contract_price_outlier_flag,
-
         CASE
             WHEN prelim_exclude_from_training = 0
              AND (
@@ -882,35 +806,27 @@ outlier_flagged AS (
                 THEN 1
             ELSE 0
         END AS include_in_avg_contract_price_flag
-
     FROM series_stats s
 ),
 
 pass2_flags AS (
     SELECT
         o.*,
-
         CASE
             WHEN prelim_exclude_from_training = 1 THEN 1
             WHEN invalid_wac_flag             = 1 THEN 1
             WHEN contract_price_outlier_flag  = 1 THEN 1
             ELSE 0
         END AS exclude_from_training_flag
-
     FROM outlier_flagged o
 ),
 
-/* =========================================================
-   Average contract price — partitioned by groupby_key
-   ========================================================= */
 avg_stats AS (
     SELECT
         p.*,
-
         AVG(CASE WHEN include_in_avg_contract_price_flag = 1 THEN CONTRACT_PRICE END)
             OVER (PARTITION BY groupby_key)
             AS avg_contract_price_excl_outliers,
-
         SUM(CASE WHEN include_in_avg_contract_price_flag = 1 THEN TOTAL_NET_COS END)
             OVER (PARTITION BY groupby_key)
         / NULLIF(
@@ -918,21 +834,15 @@ avg_stats AS (
                 OVER (PARTITION BY groupby_key),
           0)
             AS qty_weighted_avg_contract_price_excl_outliers,
-
         COUNT(CASE WHEN include_in_avg_contract_price_flag = 1 THEN 1 END)
             OVER (PARTITION BY groupby_key)
             AS months_used_in_avg_contract_price,
-
         COUNT(CASE WHEN contract_price_outlier_flag = 1 THEN 1 END)
             OVER (PARTITION BY groupby_key)
             AS months_excluded_as_contract_price_outliers
-
     FROM pass2_flags p
 ),
 
-/* =========================================================
-   MoM lag extraction — ordered within groupby_key
-   ========================================================= */
 mom_lagged AS (
     SELECT
         a.*,
@@ -956,10 +866,8 @@ mom_flags AS (
         m.*,
         prev_cp                                             AS prev_month_contract_price,
         prev_wac                                            AS prev_month_wac_weighted,
-
         (CONTRACT_PRICE - prev_cp)
             / NULLIF(prev_cp, 0)                            AS contract_price_mom_pct_change,
-
         MAX(CASE
             WHEN prev_cp IS NULL THEN 0
             WHEN (CONTRACT_PRICE - prev_cp) / NULLIF(prev_cp, 0) <= -0.30 THEN 1
@@ -969,7 +877,6 @@ mom_flags AS (
             ORDER BY cal_month_start_dt
             ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
         )                                                   AS contract_price_drop_30pct_flag,
-
         MAX(CASE
             WHEN prev_cp IS NULL THEN 0
             WHEN (CONTRACT_PRICE - prev_cp) / NULLIF(prev_cp, 0) >= 0.30 THEN 1
@@ -979,14 +886,12 @@ mom_flags AS (
             ORDER BY cal_month_start_dt
             ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
         )                                                   AS contract_price_inc_30pct_flag,
-
         CASE
             WHEN prev_cp IS NULL          THEN NULL
             WHEN CONTRACT_PRICE > prev_cp THEN 'INCREASE'
             WHEN CONTRACT_PRICE < prev_cp THEN 'DECREASE'
             ELSE 'FLAT'
         END                                                 AS contract_price_mom_direction,
-
         MAX(CASE
             WHEN prev_wac IS NULL        THEN 0
             WHEN WAC_WEIGHTED < prev_wac THEN 1
@@ -996,12 +901,9 @@ mom_flags AS (
             ORDER BY cal_month_start_dt
             ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
         )                                                   AS wac_mom_decrease_flag,
-
         (WAC_WEIGHTED - prev_wac)
             / NULLIF(prev_wac, 0)                           AS wac_mom_pct_change,
-
         WAC_SPREAD - prev_wac_spread                        AS wac_spread_mom_abs_change
-
     FROM mom_lagged m
 )
 
@@ -1018,3 +920,61 @@ SELECT
     )                                                       AS wac_5pct_drop_flag
 FROM mom_flags m
 ;
+
+
+-- =========================================================
+-- STEP 1 QA QUERIES
+-- =========================================================
+
+-- Q_S1_1: Confirm no duplicate rows per groupby_key + month
+SELECT groupby_key, cal_month_start_dt, COUNT(*) AS row_count
+FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v23
+GROUP BY groupby_key, cal_month_start_dt
+HAVING COUNT(*) > 1
+ORDER BY row_count DESC
+LIMIT 50;
+
+-- Q_S1_2: Confirm no negative CONTRACT_PRICE or TOTAL_NET_COS
+SELECT COUNT(*) AS bad_rows
+FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v23
+WHERE CONTRACT_PRICE < 0 OR TOTAL_NET_COS < 0;
+
+-- Q_S1_3: Regime change distribution
+SELECT regime_change_type, COUNT(DISTINCT groupby_key) AS key_count
+FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v23
+GROUP BY regime_change_type
+ORDER BY key_count DESC;
+
+-- Q_S1_4: mixed_regime_flag join match rate (known issue validation)
+-- Checks what % of 340B keys in normalized matched a mixed_regime_flag row.
+-- Expect >99% match. Low match rate indicates groupby_key mismatch.
+SELECT
+    COUNT(DISTINCT CASE WHEN regime_change_type != 'NONE' THEN groupby_key END)
+        AS matched_regime_keys,
+    COUNT(DISTINCT CASE WHEN ACCT_CLASSIFICATION IN ('340B-CP','340B-CE')
+                        THEN groupby_key END)
+        AS total_340b_keys,
+    ROUND(
+        COUNT(DISTINCT CASE WHEN regime_change_type != 'NONE' THEN groupby_key END)
+        / NULLIF(COUNT(DISTINCT CASE WHEN ACCT_CLASSIFICATION IN ('340B-CP','340B-CE')
+                                     THEN groupby_key END), 0) * 100, 2
+    ) AS match_pct
+FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v23
+WHERE ACCT_CLASSIFICATION IN ('340B-CP','340B-CE');
+
+-- Q_S1_5: Training exclusion breakdown
+SELECT
+    exclude_from_training_flag,
+    prelim_exclude_from_training,
+    contract_price_outlier_flag,
+    invalid_wac_flag,
+    COUNT(*) AS row_count
+FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v23
+GROUP BY 1,2,3,4
+ORDER BY 1,2,3,4;
+
+-- Q_S1_6: Confirm ZOMBIE_SALE_FLAG NULL safety —
+-- no rows where zombie_sale_flag=1 and TOTAL_ZOMBIE_SALES is NULL
+SELECT COUNT(*) AS bad_rows
+FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v23
+WHERE zombie_sale_flag = 1 AND TOTAL_ZOMBIE_SALES IS NULL;
