@@ -1,125 +1,58 @@
 -- =========================================================
--- STEP 4 (LIVE): CONTRACT PRICE MATERIAL LIVE ASSUMPTIONS v23
+-- STEP 4 (BT): CONTRACT PRICE BT MATERIAL ASSUMPTIONS v23
 --
--- Live forecasting version of Step 4.
--- Produces one row per groupby_key (no run_id).
--- Uses full training history — no point-in-time caps.
+-- Fix 16 — jump_off_month forwarded through assembled CTE.
+-- Fix 17 — Leakage-free APOLLO step-up projection.
+-- Fix 18 — Post-anchor leakage fixes across all non-APOLLO branches.
+-- Fix 19 — Typical-month-only step-up pct for APOLLO projection.
 --
--- Jump-off date: dynamically derived as the latest available
--- cal_month_start_dt in contract_price_modeling_base_v23.
--- To override with a fixed date, replace the jump_off subquery
--- with: SELECT DATE '2025-06-01' AS jump_off_month
+-- Fix 20 (Medium) — pf_trend / mfr_trend extreme YOY pair filter.
+--   Both CTEs now apply ABS(yoy_pct) <= 5.0 filter before averaging,
+--   consistent with trend_direction. Previously a single 340B APOLLO
+--   series with e.g. $0.01 → $1.00 (9,900% YOY) would pull the entire
+--   product family or manufacturer fallback rate to a nonsensical value,
+--   which then propagated to every BX/APOLLO sparse key in that family.
 --
--- Key differences from BT version:
---   No run_id — one row per groupby_key
---   No history_end_dt cap — full training history used
---   No jump_off_month cap on post_anchor signals
---   post_anchor_wac/cp use all months after anchor
---   Feeds: contract_price_live_resolved_assumptions_v23
+-- Fix 21 (Medium) — combined_mom_raw filters to include_for_modeling_flag = 1.
+--   Step 3 flags transient price spikes (contract_price_change_outlier_flag = 1,
+--   include_for_modeling_flag = 0). Previously combined_mom_raw joined
+--   training_clean with no such filter, allowing spike months to contribute
+--   to cp_mom_pct_change > 0.02 and inflate step_up_count / avg_step_up_pct.
+--   A series with two transient data-correction spikes could satisfy
+--   step_up_count >= 2 and trigger STEP_UP_HISTORY — exactly what Step 3
+--   was designed to prevent. Fix adds include_for_modeling_flag = 1 to join.
 --
--- v23 changes (see full changelog in prior versions):
---   (a) PF/MFR fallback trend cap reverted to ±2% outer cap only.
---   (b) BX sparse fallback negative-only restriction.
---   (c) APOLLO + BX typical_increase_month detection.
---   (d) APOLLO + BX step-up / step-down history logic.
---
--- Fixes applied in this file vs v23d source:
---
---   Fix 12 (Critical) — Nested window functions in step_history_mom.
---     LAST_VALUE IGNORE NULLS referenced LAG() inside its argument,
---     which is invalid in Snowflake (window inside window argument).
---     Split into two CTEs:
---       step_history_mom_raw — computes LAG-based MoM changes and
---         recent_wac_mom_change_if_in_window per row.
---       step_history_mom     — applies LAST_VALUE IGNORE NULLS over
---         the already-computed cp_mom_pct_change from _raw.
---     apollo_mom and step_history_mom_raw also merged into a single
---     training_clean scan (Fix 13b / performance).
---
---   Fix 13 (Medium) — Dead BX sparse fallback block removed from
---     ELSE ±2% branch of expected_monthly_trend_pct. BX non-340B
---     keys are fully captured by the ±15% WHEN block and can never
---     reach the ELSE branch. Removed to eliminate dead code and
---     prevent future confusion.
---
---   Fix 14 (Low) — acct_classification added to final SELECT.
---     Was computed in guardrails CTE but never forwarded to output.
---
---   Fix 15 (Low) — trend_cap_applied diagnostic column added to
---     final SELECT. Indicates which outer cap bound was applied
---     per key, enabling QA of cap-lifted segments.
---
---   Cap lift — expected_monthly_trend_pct outer cap restructured:
---     APOLLO        ±15% (was ±2%)
---     MPB Specialty ±15% (was ±2%)
---     BX non-340B   ±15% (was ±2%)
---     DROP SHIP non-340B ±10% (was ±2%)
---     All others    ±2%  (unchanged)
---     Diagnostic data showed 94-99% pct_clipped_high_confidence
---     for BX/MPB Specialty clipped buckets. GX, BIOSIMS, OTC, VAX
---     retain ±2% — outlier avg_raw_yoy_pct values indicate cap is
---     doing real noise suppression work for these segments.
---
--- Feeds: contract_price_bt_resolved_assumptions_v23
---
--- Output columns (in order):
---   run_id, groupby_key, cust_prod_category, acct_classification,
---   anchor_month, anchor_contract_price, anchor_wac_spread,
---   sap_months, recent_6m_months, prior_6m_months,
---   recent_6m_avg_contract_price, prior_6m_avg_contract_price,
---   recent_6m_avg_wac_spread, latest_6_observed_months,
---   latest_6_observed_avg_contract_price, latest_6_observed_avg_wac_spread,
---   post_anchor_avg_wac_spread, post_anchor_months,
---   post_anchor_avg_contract_price, post_anchor_cp_months,
---   yoy_pairs_used, avg_yoy_pct, directional_consistency,
---   raw_regression_trend_pct, pf_yoy_pairs_used, pf_avg_yoy_pct,
---   mfr_yoy_pairs_used, mfr_avg_yoy_pct, sign_only_eligible,
---   g5_recent_price_not_falling, typical_increase_month,
---   step_up_count, avg_step_up_pct, step_down_count,
---   avg_step_down_pct, last_step_direction, recent_wac_avg_mom_change,
---   forecast_start_contract_price, forecast_start_wac_spread,
---   forecast_start_price_source, expected_monthly_trend_pct,
---   assigned_trend_method, trend_cap_applied,
---   sparse_price_confidence, is_sparse_price_flag
---
--- QA notes (see bottom of file):
---   Q1 — Keys switching from NO_TREND to fallback method.
---   Q2 — Bias check pre/post fallback.
---   Q3 — No key-level trend override.
---   Q4 — PF/MFR avg_yoy_pct variance vs key-level.
---   Q5 — Step history coverage by category.
---   Q6 — Step magnitude sanity check.
---   Q7 — Cap lift validation: pct of keys at cap boundary by segment.
+-- Fix 22 (Low) — Dead GX branches removed from DROP SHIP trend block.
+--   cust_prod_category is mutually exclusive — GX is never DROP SHIP.
+--   Inside the WHEN cust_prod_category = 'DROP SHIP' outer block the
+--   WHEN g.cust_prod_category = 'GX' inner branches and the
+--   AND g.cust_prod_category != 'GX' guards are always false/true
+--   respectively. No numeric impact today but a maintenance risk.
+--   Removed dead GX branches from DROP SHIP block; dampened 0.19x rate
+--   now applies unconditionally for non-positive-dc keys as intended.
 -- =========================================================
-CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_material_live_assumptions_v23 AS
-WITH -- ── jump_off_month: latest available month in modeling_base ───────────────
--- Override: replace with SELECT DATE '2025-06-01' AS jump_off_month
--- to use a fixed date instead of dynamic latest month.
-jump_off AS (
-    SELECT MAX(cal_month_start_dt) AS jump_off_month
-    FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v23
-    WHERE exclude_from_training_flag = 0
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_material_assumptions_v23 AS
+WITH eligible AS (
+    SELECT *
+    FROM uspd_analytics_den.analytics_gold.contract_price_bt_run_eligibility_v23
+    WHERE is_eligible_for_run = 1
 ),
--- ── all_keys: all active groupby_keys with at least 1 training month ──────
-all_keys AS (
-    SELECT DISTINCT groupby_key
-    FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v23
-    WHERE exclude_from_training_flag = 0
-),
--- ── sap_coverage: full history month count (no cap) ───────────────────────
-sap_coverage AS (
+bt_sap_coverage AS (
     SELECT
+        e.run_id,
         b.groupby_key,
         COUNT(DISTINCT b.cal_month_start_dt)    AS sap_months_bt
-    FROM all_keys a
+    FROM eligible e
     JOIN uspd_analytics_den.analytics_gold.contract_price_modeling_base_v23 b
-      ON a.groupby_key = b.groupby_key
+      ON e.groupby_key = b.groupby_key
+     AND b.cal_month_start_dt <= e.history_end_dt
      AND b.exclude_from_training_flag = 0
-    GROUP BY b.groupby_key
+    GROUP BY e.run_id, b.groupby_key
 ),
 recent_6m AS (
     SELECT
-        a.groupby_key,
+        e.run_id,
+        e.groupby_key,
         la.anchor_month,
         COUNT(DISTINCT CASE
             WHEN b.cal_month_start_dt > ADD_MONTHS(la.anchor_month, -6)
@@ -149,63 +82,71 @@ recent_6m AS (
             WHEN b.cal_month_start_dt >  ADD_MONTHS(la.anchor_month, -12)
              AND b.cal_month_start_dt <= ADD_MONTHS(la.anchor_month, -6)
             THEN b.wac_spread END)                          AS prior_6m_avg_wac_spread
-    FROM all_keys a
-    JOIN uspd_analytics_den.analytics_gold.contract_price_last_actual_v23 la
-      ON a.groupby_key = la.groupby_key
+    FROM eligible e
+    JOIN uspd_analytics_den.analytics_gold.contract_price_bt_last_actual_v23 la
+      ON e.run_id = la.run_id AND e.groupby_key = la.groupby_key
     JOIN uspd_analytics_den.analytics_gold.contract_price_modeling_base_v23 b
-      ON a.groupby_key = b.groupby_key
+      ON e.groupby_key = b.groupby_key
+     AND b.cal_month_start_dt <= e.history_end_dt
      AND b.exclude_from_training_flag = 0
-    GROUP BY a.groupby_key, la.anchor_month
+    GROUP BY e.run_id, e.groupby_key, la.anchor_month
 ),
 post_anchor_wac AS (
     SELECT
+        e.run_id,
         b.groupby_key,
         AVG(b.wac_spread)                               AS post_anchor_avg_wac_spread,
         COUNT(DISTINCT b.cal_month_start_dt)            AS post_anchor_months
-    FROM all_keys a
-    JOIN uspd_analytics_den.analytics_gold.contract_price_last_actual_v23 la
-      ON a.groupby_key = la.groupby_key
+    FROM eligible e
+    JOIN uspd_analytics_den.analytics_gold.contract_price_bt_last_actual_v23 la
+      ON e.run_id = la.run_id AND e.groupby_key = la.groupby_key
     JOIN uspd_analytics_den.analytics_gold.contract_price_modeling_base_v23 b
-      ON a.groupby_key = b.groupby_key
+      ON e.groupby_key = b.groupby_key
      AND b.cal_month_start_dt >  la.anchor_month
+     AND b.cal_month_start_dt <  e.jump_off_month
      AND b.exclude_from_actuals_flag = 0
      AND b.wac_spread IS NOT NULL
-    GROUP BY b.groupby_key
+    GROUP BY e.run_id, b.groupby_key
 ),
 post_anchor_cp AS (
     SELECT
+        e.run_id,
         b.groupby_key,
         NULLIF(SUM(b.total_net_cos), 0)
             / NULLIF(SUM(b.total_sls_qty), 0)           AS post_anchor_avg_contract_price,
         COUNT(DISTINCT b.cal_month_start_dt)            AS post_anchor_cp_months
-    FROM all_keys a
-    JOIN uspd_analytics_den.analytics_gold.contract_price_last_actual_v23 la
-      ON a.groupby_key = la.groupby_key
+    FROM eligible e
+    JOIN uspd_analytics_den.analytics_gold.contract_price_bt_last_actual_v23 la
+      ON e.run_id = la.run_id AND e.groupby_key = la.groupby_key
     JOIN uspd_analytics_den.analytics_gold.contract_price_modeling_base_v23 b
-      ON a.groupby_key = b.groupby_key
+      ON e.groupby_key = b.groupby_key
      AND b.cal_month_start_dt >  la.anchor_month
+     AND b.cal_month_start_dt <  e.jump_off_month
      AND b.exclude_from_actuals_flag = 0
      AND b.total_net_cos IS NOT NULL
      AND b.total_sls_qty IS NOT NULL
-    GROUP BY b.groupby_key
+    GROUP BY e.run_id, b.groupby_key
 ),
 yearly_price AS (
     SELECT
+        e.run_id,
         b.groupby_key,
         CEIL((DATEDIFF(MONTH, b.cal_month_start_dt, la.anchor_month) + 1) / 12.0) AS yr_bucket,
         NULLIF(SUM(b.total_net_cos), 0) / NULLIF(SUM(b.total_sls_qty), 0)          AS yr_price
-    FROM all_keys a
-    JOIN uspd_analytics_den.analytics_gold.contract_price_last_actual_v23 la
-      ON a.groupby_key = la.groupby_key
+    FROM eligible e
+    JOIN uspd_analytics_den.analytics_gold.contract_price_bt_last_actual_v23 la
+      ON e.run_id = la.run_id AND e.groupby_key = la.groupby_key
     JOIN uspd_analytics_den.analytics_gold.contract_price_modeling_base_v23 b
-      ON a.groupby_key = b.groupby_key
+      ON e.groupby_key = b.groupby_key
+     AND b.cal_month_start_dt <= e.history_end_dt
      AND b.exclude_from_training_flag = 0
      AND DATEDIFF(MONTH, b.cal_month_start_dt, la.anchor_month) BETWEEN 0 AND 47
-    GROUP BY b.groupby_key,
+    GROUP BY e.run_id, b.groupby_key,
              CEIL((DATEDIFF(MONTH, b.cal_month_start_dt, la.anchor_month) + 1) / 12.0)
 ),
 yearly_yoy AS (
     SELECT
+        y_curr.run_id,
         y_curr.groupby_key,
         (y_curr.yr_price / NULLIF(y_prev.yr_price, 0)) - 1     AS yoy_pct,
         CASE
@@ -214,26 +155,19 @@ yearly_yoy AS (
         END                                                     AS is_positive
     FROM yearly_price y_curr
     JOIN yearly_price y_prev
-      ON y_curr.groupby_key  = y_prev.groupby_key
+      ON y_curr.run_id       = y_prev.run_id
+     AND y_curr.groupby_key  = y_prev.groupby_key
      AND y_curr.yr_bucket    = y_prev.yr_bucket - 1
     WHERE y_curr.yr_price IS NOT NULL
       AND y_prev.yr_price  IS NOT NULL
 ),
 trend_direction AS (
     SELECT
+        run_id,
         groupby_key,
-        -- yoy_pairs_used counts ALL pairs including extreme ones,
-        -- so eligibility thresholds (>= 1, >= 2) are unaffected.
         COUNT(*)                                        AS yoy_pairs_used,
-        -- YOY pair sanity filter: exclude pairs where |yoy_pct| > 5.0 (500%)
-        -- before averaging. These are almost entirely tiny-price 340B APOLLO
-        -- keys where price moved from near-zero to thousands in one year
-        -- (e.g. $0.01 → $1.00 = 9,900% YOY), contaminating avg_yoy_pct
-        -- and producing nonsensical trend rates even after the ±15% outer cap.
-        -- Excluded pairs still count toward yoy_pairs_used and is_positive
-        -- for directional_consistency so eligibility is not affected.
-        -- The ±15% cap remains the final safety net; this filter removes
-        -- the signal distortion before it reaches the average.
+        -- Filter extreme pairs before averaging (same filter applied in
+        -- pf_trend / mfr_trend per Fix 20 for consistency).
         AVG(CASE WHEN ABS(yoy_pct) <= 5.0 THEN yoy_pct END)
                                                         AS avg_yoy_pct,
         AVG(CAST(is_positive AS FLOAT))                 AS pct_positive_pairs,
@@ -242,33 +176,37 @@ trend_direction AS (
             1 - AVG(CAST(is_positive AS FLOAT))
         )                                               AS directional_consistency
     FROM yearly_yoy
-    GROUP BY groupby_key
+    GROUP BY run_id, groupby_key
 ),
 quarterly_price AS (
     SELECT
+        e.run_id,
         b.groupby_key,
         CEIL((DATEDIFF(MONTH, b.cal_month_start_dt, la.anchor_month) + 1) / 3.0) AS qtr_bucket,
         NULLIF(SUM(b.total_net_cos), 0) / NULLIF(SUM(b.total_sls_qty), 0)         AS qtr_price
-    FROM all_keys a
-    JOIN uspd_analytics_den.analytics_gold.contract_price_last_actual_v23 la
-      ON a.groupby_key = la.groupby_key
+    FROM eligible e
+    JOIN uspd_analytics_den.analytics_gold.contract_price_bt_last_actual_v23 la
+      ON e.run_id = la.run_id AND e.groupby_key = la.groupby_key
     JOIN uspd_analytics_den.analytics_gold.contract_price_modeling_base_v23 b
-      ON a.groupby_key = b.groupby_key
+      ON e.groupby_key = b.groupby_key
+     AND b.cal_month_start_dt <= e.history_end_dt
      AND b.exclude_from_training_flag = 0
      AND DATEDIFF(MONTH, b.cal_month_start_dt, la.anchor_month) BETWEEN 0 AND 23
-    GROUP BY b.groupby_key,
+    GROUP BY e.run_id, b.groupby_key,
              CEIL((DATEDIFF(MONTH, b.cal_month_start_dt, la.anchor_month) + 1) / 3.0)
 ),
 quarterly_with_x AS (
     SELECT
+        run_id,
         groupby_key,
         qtr_price,
-        MAX(qtr_bucket) OVER (PARTITION BY groupby_key) - qtr_bucket AS x
+        MAX(qtr_bucket) OVER (PARTITION BY run_id, groupby_key) - qtr_bucket AS x
     FROM quarterly_price
     WHERE qtr_price IS NOT NULL
 ),
 trend_regression AS (
     SELECT
+        run_id,
         groupby_key,
         COUNT(*)                                            AS quarters_used,
         (COUNT(*) * SUM(x * qtr_price) - SUM(x) * SUM(qtr_price))
@@ -277,7 +215,7 @@ trend_regression AS (
           0)                                               AS ols_slope,
         AVG(qtr_price)                                     AS avg_price_ref
     FROM quarterly_with_x
-    GROUP BY groupby_key
+    GROUP BY run_id, groupby_key
 ),
 pf_lookup AS (
     SELECT
@@ -291,78 +229,70 @@ pf_lookup AS (
 ),
 pf_trend AS (
     SELECT
+        yy.run_id,
         pf.product_family,
         COUNT(*)                                        AS pf_yoy_pairs_used,
-        AVG(yy.yoy_pct)                                 AS pf_avg_yoy_pct
+        -- Fix 20: filter extreme YOY pairs before averaging.
+        -- Consistent with trend_direction ABS(yoy_pct) <= 5.0 filter.
+        -- Prevents a single 340B APOLLO key (e.g. $0.01 -> $1.00 = 9,900%
+        -- YOY) from pulling the entire product family fallback rate to a
+        -- nonsensical value applied to every sparse series in that family.
+        AVG(CASE WHEN ABS(yy.yoy_pct) <= 5.0 THEN yy.yoy_pct END)
+                                                        AS pf_avg_yoy_pct
     FROM yearly_yoy yy
     JOIN pf_lookup pf ON yy.groupby_key = pf.groupby_key
     WHERE pf.product_family IS NOT NULL
-    GROUP BY pf.product_family
+    GROUP BY yy.run_id, pf.product_family
 ),
 mfr_trend AS (
     SELECT
+        yy.run_id,
         pf.manufacturer_id,
         COUNT(*)                                        AS mfr_yoy_pairs_used,
-        AVG(yy.yoy_pct)                                 AS mfr_avg_yoy_pct
+        -- Fix 20: same extreme pair filter as pf_trend and trend_direction.
+        AVG(CASE WHEN ABS(yy.yoy_pct) <= 5.0 THEN yy.yoy_pct END)
+                                                        AS mfr_avg_yoy_pct
     FROM yearly_yoy yy
     JOIN pf_lookup pf ON yy.groupby_key = pf.groupby_key
     WHERE pf.manufacturer_id IS NOT NULL
-    GROUP BY pf.manufacturer_id
+    GROUP BY yy.run_id, pf.manufacturer_id
 ),
--- ── Fix 12 + Fix 13b: merged apollo_mom and step_history_mom_raw ──────────
--- Single scan of contract_price_training_clean_v23 for all APOLLO, BX,
--- GLP-1, MPB Specialty, MPB Plasma keys. Replaces the two separate CTEs
--- (apollo_mom and step_history_mom) that previously both joined training_clean.
--- LAG computations for cp_mom and wac_mom done here (step 1 of Fix 12 split).
 combined_mom_raw AS (
     SELECT
+        e.run_id,
         t.groupby_key,
         t.cal_month_start_dt,
         pf.cust_prod_category,
         MONTH(t.cal_month_start_dt)                     AS price_month,
         t.contract_price
             / NULLIF(LAG(t.contract_price) OVER (
-                PARTITION BY t.groupby_key
+                PARTITION BY e.run_id, t.groupby_key
                 ORDER BY t.cal_month_start_dt
             ), 0) - 1                                   AS cp_mom_pct_change,
         t.wac
             / NULLIF(LAG(t.wac) OVER (
-                PARTITION BY t.groupby_key
+                PARTITION BY e.run_id, t.groupby_key
                 ORDER BY t.cal_month_start_dt
             ), 0) - 1                                   AS wac_mom_pct_change,
-        -- Recent WAC MoM: last 6 months before jump_off
         CASE
-            WHEN t.cal_month_start_dt > ADD_MONTHS(jo.jump_off_month, -6)
+            WHEN t.cal_month_start_dt > ADD_MONTHS(e.jump_off_month, -6)
             THEN t.wac / NULLIF(LAG(t.wac) OVER (
-                     PARTITION BY t.groupby_key
+                     PARTITION BY e.run_id, t.groupby_key
                      ORDER BY t.cal_month_start_dt
                  ), 0) - 1
         END                                             AS recent_wac_mom_change_if_in_window
-    FROM all_keys a
-    CROSS JOIN jump_off jo
+    FROM eligible e
     JOIN uspd_analytics_den.analytics_gold.contract_price_training_clean_v23 t
-      ON a.groupby_key = t.groupby_key
+      ON e.groupby_key = t.groupby_key
+     AND t.cal_month_start_dt <= e.history_end_dt
+     AND t.include_for_modeling_flag = 1               -- Fix 21: exclude spike/outlier months
     JOIN pf_lookup pf
       ON t.groupby_key = pf.groupby_key
     WHERE pf.cust_prod_category IN ('APOLLO', 'BX', 'GLP-1', 'MPB Specialty', 'MPB Plasma')
 ),
--- ── Fix 12 step 2: resolve last_step_direction without LAST_VALUE IGNORE NULLS ─
--- LAST_VALUE IGNORE NULLS is not supported in all Databricks runtimes.
--- Workaround: two-step approach using numeric epoch sort.
---
--- Step 1 (combined_mom_raw already done): cp_mom_pct_change is available per row.
--- Step 2 here: find the epoch (unix date) of the most recent significant step
---   using MAX(CASE WHEN ABS(cp_mom_pct_change) > 0.02 THEN unix_date END).
---   Then for each row, check if THIS row is the latest step row, and if so,
---   emit 'UP' or 'DOWN'. All other rows emit NULL.
--- Step 3 (combined_mom_resolved below): MAX(last_step_direction_raw) over the
---   full partition collapses NULLs — only the latest step row contributes a
---   non-NULL value, so MAX returns exactly that value for all rows in the key.
---
--- This avoids string-sort ambiguity ('DOWN' vs 'UP' lexicographic order) and
--- avoids any IGNORE NULLS syntax entirely.
 combined_mom_directed AS (
     SELECT
+        run_id,
         groupby_key,
         cal_month_start_dt,
         cust_prod_category,
@@ -375,18 +305,15 @@ combined_mom_directed AS (
              AND UNIX_DATE(cal_month_start_dt)
                  = MAX(CASE WHEN ABS(cp_mom_pct_change) > 0.02
                             THEN UNIX_DATE(cal_month_start_dt) END)
-                   OVER (PARTITION BY groupby_key)
+                   OVER (PARTITION BY run_id, groupby_key)
             THEN CASE WHEN cp_mom_pct_change > 0 THEN 'UP' ELSE 'DOWN' END
             ELSE NULL
         END                                             AS last_step_direction_raw
     FROM combined_mom_raw
 ),
--- Collapse: MAX(last_step_direction_raw) over the full partition propagates
--- the single non-NULL direction value to every row in the key.
--- 'UP' > 'DOWN' alphabetically, so if somehow two rows tie on the latest date
--- (one UP one DOWN), MAX returns 'UP' — acceptable edge case.
 combined_mom AS (
     SELECT
+        run_id,
         groupby_key,
         cal_month_start_dt,
         cust_prod_category,
@@ -395,57 +322,79 @@ combined_mom AS (
         wac_mom_pct_change,
         recent_wac_mom_change_if_in_window,
         MAX(last_step_direction_raw)
-            OVER (PARTITION BY groupby_key)             AS last_step_direction
+            OVER (PARTITION BY run_id, groupby_key)     AS last_step_direction
     FROM combined_mom_directed
 ),
--- ── typical_increase_month (APOLLO, BX, GLP-1, MPB Specialty, MPB Plasma) ─
+-- ── typical_increase_month must be defined BEFORE step_history ────────────
 typical_increase_month AS (
     SELECT
+        run_id,
         groupby_key,
         price_month                                     AS typical_increase_month
     FROM (
         SELECT
+            run_id,
             groupby_key,
             price_month,
             COUNT(*)                                    AS increase_count,
             AVG(cp_mom_pct_change)                      AS avg_increase
         FROM combined_mom
         WHERE cp_mom_pct_change > 0.02
-        GROUP BY groupby_key, price_month
+        GROUP BY run_id, groupby_key, price_month
     )
     QUALIFY ROW_NUMBER() OVER (
-        PARTITION BY groupby_key
+        PARTITION BY run_id, groupby_key
         ORDER BY increase_count DESC, avg_increase DESC
     ) = 1
 ),
--- ── step_history (APOLLO and BX only) ─────────────────────────────────────
-step_history AS (
+-- ── Fix 19: step_history split into raw + final ───────────────────────────
+step_history_raw AS (
     SELECT
+        run_id,
         groupby_key,
-        SUM(CASE WHEN cp_mom_pct_change >  0.02 THEN 1 ELSE 0 END)
-                                                        AS step_up_count,
-        AVG(CASE WHEN cp_mom_pct_change >  0.02
-                 THEN cp_mom_pct_change END)            AS avg_step_up_pct,
-        SUM(CASE WHEN cp_mom_pct_change < -0.02 THEN 1 ELSE 0 END)
-                                                        AS step_down_count,
-        AVG(CASE WHEN cp_mom_pct_change < -0.02
-                 THEN cp_mom_pct_change END)            AS avg_step_down_pct,
-        MAX(last_step_direction)                        AS last_step_direction,
-        AVG(recent_wac_mom_change_if_in_window)         AS recent_wac_avg_mom_change
+        price_month,
+        cp_mom_pct_change,
+        last_step_direction,
+        recent_wac_mom_change_if_in_window
     FROM combined_mom
     WHERE cust_prod_category IN ('APOLLO', 'BX')
-    GROUP BY groupby_key
+),
+step_history AS (
+    SELECT
+        sh.run_id,
+        sh.groupby_key,
+        SUM(CASE WHEN sh.cp_mom_pct_change >  0.02 THEN 1 ELSE 0 END)
+                                                        AS step_up_count,
+        AVG(CASE WHEN sh.cp_mom_pct_change >  0.02
+                 THEN sh.cp_mom_pct_change END)         AS avg_step_up_pct,
+        SUM(CASE WHEN sh.cp_mom_pct_change < -0.02 THEN 1 ELSE 0 END)
+                                                        AS step_down_count,
+        AVG(CASE WHEN sh.cp_mom_pct_change < -0.02
+                 THEN sh.cp_mom_pct_change END)         AS avg_step_down_pct,
+        MAX(sh.last_step_direction)                     AS last_step_direction,
+        AVG(sh.recent_wac_mom_change_if_in_window)      AS recent_wac_avg_mom_change,
+        -- Fix 19: typical-month-only step-up signals
+        AVG(CASE
+            WHEN sh.cp_mom_pct_change > 0.02
+             AND sh.price_month = tim.typical_increase_month
+            THEN sh.cp_mom_pct_change
+        END)                                            AS typical_increase_month_step_up_pct,
+        SUM(CASE
+            WHEN sh.cp_mom_pct_change > 0.02
+             AND sh.price_month = tim.typical_increase_month
+            THEN 1 ELSE 0
+        END)                                            AS typical_increase_month_step_up_count
+    FROM step_history_raw sh
+    LEFT JOIN typical_increase_month tim
+      ON sh.run_id      = tim.run_id
+     AND sh.groupby_key = tim.groupby_key
+    GROUP BY sh.run_id, sh.groupby_key
 ),
 assembled AS (
     SELECT
-        a.groupby_key,
-        -- acct_classification: do NOT COALESCE to UNKNOWN — NULL must stay NULL
-        -- so that IN ('340B-CP','340B-CE') and = 'WAC' checks fail correctly
-        -- for keys where modeling_base has no acct_classification. UNKNOWN
-        -- would silently route these keys to wrong trend branches.
-        -- Step 5b uses e.acct_classification (eligibility table) as the
-        -- authoritative point-in-time value; this column is for Step 4
-        -- internal routing and diagnostic output only.
+        e.run_id,
+        e.groupby_key,
+        e.jump_off_month,
         pf.acct_classification                          AS acct_classification,
         COALESCE(pf.cust_prod_category,  'UNKNOWN')     AS cust_prod_category,
         COALESCE(pf.product_family,      'UNKNOWN')     AS product_family,
@@ -481,21 +430,23 @@ assembled AS (
         sh.step_down_count,
         sh.avg_step_down_pct,
         sh.last_step_direction,
-        sh.recent_wac_avg_mom_change
-    FROM all_keys a
-    LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_last_actual_v23       la   ON a.groupby_key = la.groupby_key
-    LEFT JOIN sap_coverage                                                             sc   ON a.groupby_key = sc.groupby_key
-    LEFT JOIN recent_6m                                                               r6   ON a.groupby_key = r6.groupby_key
-    LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_latest_obs_v23        lo   ON a.groupby_key = lo.groupby_key
-    LEFT JOIN post_anchor_wac                                                         paw  ON a.groupby_key = paw.groupby_key
-    LEFT JOIN post_anchor_cp                                                          pacp ON a.groupby_key = pacp.groupby_key
-    LEFT JOIN trend_direction                                                          td   ON a.groupby_key = td.groupby_key
-    LEFT JOIN trend_regression                                                         tr   ON a.groupby_key = tr.groupby_key
-    LEFT JOIN pf_lookup                                                                pf   ON a.groupby_key = pf.groupby_key
-    LEFT JOIN pf_trend                                                                 pft  ON COALESCE(pf.product_family, 'UNKNOWN') = pft.product_family
-    LEFT JOIN mfr_trend                                                                mft  ON pf.manufacturer_id = mft.manufacturer_id
-    LEFT JOIN typical_increase_month                                                   tim  ON a.groupby_key = tim.groupby_key
-    LEFT JOIN step_history                                                             sh   ON a.groupby_key = sh.groupby_key
+        sh.recent_wac_avg_mom_change,
+        sh.typical_increase_month_step_up_pct,
+        sh.typical_increase_month_step_up_count
+    FROM eligible e
+    LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_bt_last_actual_v23   la   ON e.run_id = la.run_id   AND e.groupby_key = la.groupby_key
+    LEFT JOIN bt_sap_coverage                                                         sc   ON e.run_id = sc.run_id   AND e.groupby_key = sc.groupby_key
+    LEFT JOIN recent_6m                                                               r6   ON e.run_id = r6.run_id   AND e.groupby_key = r6.groupby_key
+    LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_bt_latest_obs_v23     lo   ON e.run_id = lo.run_id   AND e.groupby_key = lo.groupby_key
+    LEFT JOIN post_anchor_wac                                                         paw  ON e.run_id = paw.run_id  AND e.groupby_key = paw.groupby_key
+    LEFT JOIN post_anchor_cp                                                          pacp ON e.run_id = pacp.run_id AND e.groupby_key = pacp.groupby_key
+    LEFT JOIN trend_direction                                                          td   ON e.run_id = td.run_id   AND e.groupby_key = td.groupby_key
+    LEFT JOIN trend_regression                                                         tr   ON e.run_id = tr.run_id   AND e.groupby_key = tr.groupby_key
+    LEFT JOIN pf_lookup                                                                pf   ON e.groupby_key = pf.groupby_key
+    LEFT JOIN pf_trend                                                                 pft  ON e.run_id = pft.run_id  AND COALESCE(pf.product_family, 'UNKNOWN') = pft.product_family
+    LEFT JOIN mfr_trend                                                                mft  ON e.run_id = mft.run_id  AND pf.manufacturer_id = mft.manufacturer_id
+    LEFT JOIN typical_increase_month                                                   tim  ON e.run_id = tim.run_id  AND e.groupby_key = tim.groupby_key
+    LEFT JOIN step_history                                                             sh   ON e.run_id = sh.run_id   AND e.groupby_key = sh.groupby_key
 ),
 guardrails AS (
     SELECT
@@ -523,12 +474,32 @@ guardrails AS (
             ELSE 0
         END                                                 AS wac_spread_ok,
         -- ── forecast_start_contract_price_raw ─────────────────────────────
-        -- Computed here in guardrails because it needs wac_spread_ok (also
-        -- computed here). The capped CTE then applies the 3x anchor cap.
         CASE
             WHEN a.cust_prod_category = 'APOLLO'
             THEN
                 CASE
+                    WHEN COALESCE(a.step_up_count, 0) >= 2
+                     AND a.last_step_direction = 'UP'
+                     AND a.typical_increase_month = MONTH(a.jump_off_month)
+                     AND COALESCE(a.avg_yoy_pct, 0) >= 0
+                     AND COALESCE(a.directional_consistency, 0) >= 0.60
+                    THEN a.anchor_contract_price * (1 +
+                            CASE
+                                WHEN a.typical_increase_month_step_up_pct IS NOT NULL
+                                 AND a.typical_increase_month_step_up_pct > a.avg_step_up_pct
+                                 AND a.typical_increase_month_step_up_count >= 2
+                                 AND a.product_family != 'LUPRON DEPOT'
+                                THEN a.typical_increase_month_step_up_pct
+                                ELSE a.avg_step_up_pct
+                            END)
+                    WHEN a.post_anchor_avg_contract_price IS NOT NULL
+                     AND a.post_anchor_avg_contract_price > 0
+                     AND a.anchor_contract_price IS NOT NULL
+                     AND a.anchor_contract_price > 0
+                     AND a.post_anchor_avg_contract_price
+                         / NULLIF(a.anchor_contract_price, 0) BETWEEN 1.03 AND 2.0
+                     AND a.post_anchor_cp_months >= 2
+                    THEN a.post_anchor_avg_contract_price
                     WHEN a.post_anchor_avg_contract_price IS NOT NULL
                      AND a.post_anchor_avg_contract_price > 0
                      AND a.anchor_contract_price IS NOT NULL
@@ -547,9 +518,7 @@ guardrails AS (
              AND a.recent_6m_avg_contract_price    > 0
              AND (a.post_anchor_avg_contract_price
                   / NULLIF(a.recent_6m_avg_contract_price, 0)) > 1.20
-             AND (   a.post_anchor_cp_months >= 2
-                  OR (a.post_anchor_avg_contract_price
-                      / NULLIF(a.recent_6m_avg_contract_price, 0)) > 1.50)
+             AND a.post_anchor_cp_months >= 2
             THEN a.post_anchor_avg_contract_price
             WHEN a.acct_classification != 'WAC'
              AND a.cust_prod_category  != 'APOLLO'
@@ -559,16 +528,13 @@ guardrails AS (
              AND a.recent_6m_avg_contract_price    > 0
              AND (a.post_anchor_avg_contract_price
                   / NULLIF(a.recent_6m_avg_contract_price, 0)) < 0.80
-             AND (   a.post_anchor_cp_months >= 3
-                  OR (a.post_anchor_avg_contract_price
-                      / NULLIF(a.recent_6m_avg_contract_price, 0)) < 0.70)
+             AND a.post_anchor_cp_months >= 2
             THEN a.post_anchor_avg_contract_price
             WHEN a.acct_classification = 'WAC'
              AND a.post_anchor_avg_wac_spread IS NOT NULL
              AND a.anchor_wac_spread IS NOT NULL
              AND (a.post_anchor_avg_wac_spread - a.anchor_wac_spread) < -0.05
-             AND (   a.post_anchor_months >= 3
-                  OR (a.post_anchor_avg_wac_spread - a.anchor_wac_spread) < -0.15)
+             AND a.post_anchor_months >= 2
             THEN
                 GREATEST(
                     CASE
@@ -611,20 +577,9 @@ guardrails AS (
         END                                                 AS forecast_start_contract_price_raw
     FROM assembled a
 ),
--- ── capped: apply 3x anchor cap to forecast_start_contract_price ─────────
--- forecast_start_contract_price_raw is computed in the final SELECT below
--- (it depends on g.wac_spread_ok which is only available in guardrails).
--- The cap cannot be applied in the same SELECT that computes the raw value
--- (SQL does not allow referencing a SELECT-level alias in the same SELECT).
--- Solution: capped CTE reads from guardrails, re-exposes all columns via g.*,
--- and computes the capped price and flag as additional columns.
--- The final SELECT reads from capped (aliased as g) — no other changes needed.
 capped AS (
     SELECT
         g.*,
-        -- ── forecast_start_contract_price cap ──────────────────────────────
-        -- Cap at 3x anchor (upward only). Downward corrections are intentional.
-        -- Explosion analysis: avg_start_to_anchor_ratio 3.9-8.6x, compound ~1.0.
         CASE
             WHEN g.anchor_contract_price IS NULL
               OR g.anchor_contract_price = 0
@@ -644,9 +599,10 @@ capped AS (
     FROM guardrails g
 )
 SELECT
+    g.run_id,
     g.groupby_key,
     g.cust_prod_category,
-    g.acct_classification,                              -- Fix 14: added to output
+    g.acct_classification,
     g.product_family,
     g.manufacturer_id,
     g.anchor_month,
@@ -683,6 +639,8 @@ SELECT
     g.avg_step_down_pct,
     g.last_step_direction,
     g.recent_wac_avg_mom_change,
+    g.typical_increase_month_step_up_pct,
+    g.typical_increase_month_step_up_count,
     -- ── forecast_start_wac_spread ──────────────────────────────────────────
     CASE
         WHEN g.cust_prod_category = 'APOLLO'
@@ -707,6 +665,28 @@ SELECT
         WHEN g.cust_prod_category = 'APOLLO'
         THEN
             CASE
+                WHEN COALESCE(g.step_up_count, 0) >= 2
+                 AND g.last_step_direction = 'UP'
+                 AND g.typical_increase_month = MONTH(g.jump_off_month)
+                 AND COALESCE(g.avg_yoy_pct, 0) >= 0
+                 AND COALESCE(g.directional_consistency, 0) >= 0.60
+                THEN
+                    CASE
+                        WHEN g.typical_increase_month_step_up_pct IS NOT NULL
+                         AND g.typical_increase_month_step_up_pct > g.avg_step_up_pct
+                         AND g.typical_increase_month_step_up_count >= 2
+                         AND g.product_family != 'LUPRON DEPOT'
+                        THEN 'APOLLO_PROJECTED_STEP_UP_TYPICAL_MONTH_RATE'
+                        ELSE 'APOLLO_PROJECTED_STEP_UP'
+                    END
+                WHEN g.post_anchor_avg_contract_price IS NOT NULL
+                 AND g.post_anchor_avg_contract_price > 0
+                 AND g.anchor_contract_price IS NOT NULL
+                 AND g.anchor_contract_price > 0
+                 AND g.post_anchor_avg_contract_price
+                     / NULLIF(g.anchor_contract_price, 0) BETWEEN 1.03 AND 2.0
+                 AND g.post_anchor_cp_months >= 2
+                THEN 'APOLLO_POST_ANCHOR_PRICE_INCREASE_CORRECTION'
                 WHEN g.post_anchor_avg_contract_price IS NOT NULL
                  AND g.post_anchor_avg_contract_price > 0
                  AND g.anchor_contract_price IS NOT NULL
@@ -725,9 +705,7 @@ SELECT
          AND g.recent_6m_avg_contract_price    > 0
          AND (g.post_anchor_avg_contract_price
               / NULLIF(g.recent_6m_avg_contract_price, 0)) > 1.20
-         AND (   g.post_anchor_cp_months >= 2
-              OR (g.post_anchor_avg_contract_price
-                  / NULLIF(g.recent_6m_avg_contract_price, 0)) > 1.50)
+         AND g.post_anchor_cp_months >= 2
         THEN 'POST_ANCHOR_PRICE_INCREASE_CORRECTION'
         WHEN g.acct_classification != 'WAC'
          AND g.cust_prod_category  != 'APOLLO'
@@ -737,16 +715,13 @@ SELECT
          AND g.recent_6m_avg_contract_price    > 0
          AND (g.post_anchor_avg_contract_price
               / NULLIF(g.recent_6m_avg_contract_price, 0)) < 0.80
-         AND (   g.post_anchor_cp_months >= 3
-              OR (g.post_anchor_avg_contract_price
-                  / NULLIF(g.recent_6m_avg_contract_price, 0)) < 0.70)
+         AND g.post_anchor_cp_months >= 2
         THEN 'POST_ANCHOR_PRICE_DROP_CORRECTION'
         WHEN g.acct_classification = 'WAC'
          AND g.post_anchor_avg_wac_spread IS NOT NULL
          AND g.anchor_wac_spread IS NOT NULL
          AND (g.post_anchor_avg_wac_spread - g.anchor_wac_spread) < -0.05
-         AND (   g.post_anchor_months >= 3
-              OR (g.post_anchor_avg_wac_spread - g.anchor_wac_spread) < -0.15)
+         AND g.post_anchor_months >= 2
         THEN
             CASE
                 WHEN g.recent_6m_months >= 3
@@ -833,40 +808,27 @@ SELECT
         THEN 'LATEST_PRICE_LT_3_OBSERVED_MONTHS_NO_TREND'
         ELSE 'NO_HISTORY_AVAILABLE'
     END                                                     AS forecast_start_price_source,
-    -- forecast_start_contract_price and forecast_start_price_capped_flag are
-    -- computed in the capped CTE (above guardrails) and passed through here.
-    -- They cannot be computed in this SELECT because the raw value is also
-    -- computed here and SQL does not allow self-referencing SELECT aliases.
     g.forecast_start_contract_price,
     g.forecast_start_price_capped_flag,
     -- ── expected_monthly_trend_pct ─────────────────────────────────────────
-    -- Cap lift applied per segment based on diagnostic data (pct_clipped_high_confidence):
-    --   APOLLO        ±15%: legitimate specialty drug step-ups exceed ±2%
-    --   MPB Specialty ±15%: 97-100% high confidence across all clipped buckets
-    --   BX non-340B   ±15%: 1.5M+ keys, 94-99% high confidence
-    --   DROP SHIP non-340B ±10%: high confidence but lower sap_months → conservative
-    --   All others    ±2%:  GX/BIOSIMS/OTC/VAX retain — outlier avg_raw_yoy_pct
-    --                       values indicate cap is doing real noise suppression
-    -- Fix 13: Dead BX non-340B sparse fallback block removed from ELSE branch.
-    --   BX non-340B is fully captured by its own ±15% WHEN block above ELSE.
     CASE
         -- ── APOLLO: ±15% cap ──────────────────────────────────────────────
         WHEN g.cust_prod_category = 'APOLLO'
         THEN GREATEST(-0.15, LEAST(0.15,
             CASE
-                -- Step history guard: requires directional_consistency >= 0.60
-                -- and avg_yoy_pct sign agreement.
-                -- step_up_count >= 2: tightened from >= 1 — single step-up events
-                -- added noise (WMAPE 3.08% vs AVG_YOY 2.68%). Two confirmed
-                -- step-ups required before trusting magnitude.
-                -- STEP_DOWN disabled for APOLLO: WMAPE 13.17% vs 2.68% for AVG_YOY.
-                -- WAC confirmation is only 2.2% reliable for APOLLO step-downs
-                -- (documented in v23d changelog). Falls through to avg_yoy chain.
                 WHEN COALESCE(g.step_up_count, 0) >= 2
                  AND g.last_step_direction = 'UP'
                  AND COALESCE(g.avg_yoy_pct, 0) >= 0
                  AND COALESCE(g.directional_consistency, 0) >= 0.60
-                THEN g.avg_step_up_pct
+                THEN
+                    CASE
+                        WHEN g.typical_increase_month_step_up_pct IS NOT NULL
+                         AND g.typical_increase_month_step_up_pct > g.avg_step_up_pct
+                         AND g.typical_increase_month_step_up_count >= 2
+                         AND g.product_family != 'LUPRON DEPOT'
+                        THEN g.typical_increase_month_step_up_pct
+                        ELSE g.avg_step_up_pct
+                    END
                 WHEN COALESCE(g.yoy_pairs_used, 0) >= 1    THEN g.avg_yoy_pct
                 WHEN COALESCE(g.pf_yoy_pairs_used, 0) >= 2 THEN g.pf_avg_yoy_pct
                 WHEN COALESCE(g.mfr_yoy_pairs_used, 0) >= 2 THEN g.mfr_avg_yoy_pct
@@ -876,9 +838,6 @@ SELECT
         WHEN g.cust_prod_category = 'MPB Specialty'
         THEN GREATEST(-0.15, LEAST(0.15,
             CASE
-                -- 340B-CP/CE MPB Specialty uses regression (quarterly OLS slope)
-                -- to match the trend method and avoid annual/quarterly mismatch
-                -- in Step 8 compounding.
                 WHEN g.acct_classification IN ('340B-CP','340B-CE')
                 THEN CASE
                     WHEN COALESCE(g.regression_quarters_used, 0) >= 3
@@ -900,9 +859,6 @@ SELECT
                 WHEN g.sign_only_eligible = 1 AND g.wac_spread_ok = 1
                 THEN
                     CASE
-                        -- BX STEP_DOWN_HISTORY disabled (WMAPE 16.24% vs NO_TREND 9.63%).
-                        -- WAC confirmation for step-downs is noisy; falls through
-                        -- to sign_only / AVG_YOY_PROMOTED logic below.
                         WHEN g.product_family NOT IN (
                              'HUMALOG','NOVOLOG','LANTUS','NOVOLOG FLEXPEN',
                              'HUMALOG KWIKPEN U-100','NOVOLOG MIX 70-30 FLEXPEN',
@@ -917,30 +873,15 @@ SELECT
                         WHEN g.g5_recent_price_not_falling = 1
                          AND g.directional_consistency >= 0.80
                         THEN CASE
-                              -- Full rate when all YOY pairs agree (dc=1.0) and
-                              -- trend is meaningful and direction is positive.
-                              -- Covers XARELTO, ELIQUIS, JANUVIA etc. which have
-                              -- perfectly consistent annual increases.
-                              -- GX excluded even at dc=1.0: generic price declines
-                              -- are non-linear and accelerate unpredictably —
-                              -- full undampened negative rate overshoots downward.
-                              -- Negative trends retain 0.19x dampening for all segments.
                               WHEN ABS(g.avg_yoy_pct) > 0.03
                                AND g.directional_consistency = 1.0
                                AND g.avg_yoy_pct > 0
                                AND g.cust_prod_category != 'GX'
                               THEN g.avg_yoy_pct
-                              -- GX positive trend: route to SIGN_ONLY (±1%) instead
-                              -- of * 0.19. GX AVG_YOY_PROMOTED WMAPE = 18.82% vs
-                              -- SIGN_ONLY_025PCT = 7.46% — positive YOY trend on GX
-                              -- overshoots because latest observed price already
-                              -- incorporates recent increase. SIGN_ONLY is safer.
                               WHEN ABS(g.avg_yoy_pct) > 0.03
                                AND g.avg_yoy_pct > 0
                                AND g.cust_prod_category = 'GX'
                               THEN 0.01
-                              -- Dampened rate (0.19x) for directionally
-                              -- consistent but not perfectly uniform keys.
                               WHEN ABS(g.avg_yoy_pct) > 0.03
                               THEN g.avg_yoy_pct * 0.19
                               WHEN g.avg_yoy_pct > 0 THEN  0.01
@@ -953,21 +894,12 @@ SELECT
                                   ELSE 0.0 END
                         WHEN g.avg_yoy_pct <= 0
                          AND g.directional_consistency >= 0.80
-                    THEN CASE
-                        -- GX negative trend: route to SIGN_ONLY (-1%) instead
-                        -- of * 0.19. GX AVG_YOY_PROMOTED WMAPE = 22.58% for
-                        -- negative keys vs NO_TREND 14.24% and SIGN_ONLY 7.46%.
-                        -- Generic price declines are non-linear and the dampened
-                        -- YOY rate still overshoots downward for GX.
-                        WHEN g.cust_prod_category = 'GX' THEN -0.01
-                        ELSE g.avg_yoy_pct * 0.19
-                    END
-                    -- Negative trends always dampened regardless of dc (non-GX).
-                    -- Generic price declines are non-linear and accelerate,
-                    -- so full undampened negative rates overshoot downward.
+                        THEN CASE
+                            WHEN g.cust_prod_category = 'GX' THEN -0.01
+                            ELSE g.avg_yoy_pct * 0.19
+                        END
                         ELSE 0.0
                     END
-                -- BX non-340B sparse fallback (negative-only)
                 WHEN COALESCE(g.yoy_pairs_used, 0) < 2
                  AND g.product_family NOT IN (
                     'HUMALOG','NOVOLOG','LANTUS','NOVOLOG FLEXPEN',
@@ -985,6 +917,12 @@ SELECT
                 ELSE 0.0
             END))
         -- ── DROP SHIP non-340B: ±10% cap ──────────────────────────────────
+        -- Fix 22: Dead GX branches removed. cust_prod_category is mutually
+        -- exclusive — DROP SHIP can never be GX. Removed the inner
+        -- WHEN g.cust_prod_category = 'GX' THEN 0.01 branches and the
+        -- AND g.cust_prod_category != 'GX' guard on THEN g.avg_yoy_pct.
+        -- Dampened 0.19x rate now applies unconditionally for non-positive-dc
+        -- keys, which is the correct behavior for DROP SHIP anyway.
         WHEN g.cust_prod_category = 'DROP SHIP'
          AND g.acct_classification NOT IN ('340B-CP','340B-CE')
         THEN GREATEST(-0.10, LEAST(0.10,
@@ -995,30 +933,14 @@ SELECT
                         WHEN g.g5_recent_price_not_falling = 1
                          AND g.directional_consistency >= 0.80
                         THEN CASE
-                              -- Full rate when all YOY pairs agree (dc=1.0) and
-                              -- trend is meaningful and direction is positive.
-                              -- Covers XARELTO, ELIQUIS, JANUVIA etc. which have
-                              -- perfectly consistent annual increases.
-                              -- GX excluded even at dc=1.0: generic price declines
-                              -- are non-linear and accelerate unpredictably —
-                              -- full undampened negative rate overshoots downward.
-                              -- Negative trends retain 0.19x dampening for all segments.
+                              -- Full rate when all YOY pairs agree (dc=1.0),
+                              -- trend is meaningful, and direction is positive.
                               WHEN ABS(g.avg_yoy_pct) > 0.03
                                AND g.directional_consistency = 1.0
                                AND g.avg_yoy_pct > 0
-                               AND g.cust_prod_category != 'GX'
                               THEN g.avg_yoy_pct
-                              -- GX positive trend: route to SIGN_ONLY (±1%) instead
-                              -- of * 0.19. GX AVG_YOY_PROMOTED WMAPE = 18.82% vs
-                              -- SIGN_ONLY_025PCT = 7.46% — positive YOY trend on GX
-                              -- overshoots because latest observed price already
-                              -- incorporates recent increase. SIGN_ONLY is safer.
-                              WHEN ABS(g.avg_yoy_pct) > 0.03
-                               AND g.avg_yoy_pct > 0
-                               AND g.cust_prod_category = 'GX'
-                              THEN 0.01
-                              -- Dampened rate (0.19x) for directionally
-                              -- consistent but not perfectly uniform keys.
+                              -- Dampened rate for directionally consistent
+                              -- but not perfectly uniform keys.
                               WHEN ABS(g.avg_yoy_pct) > 0.03
                               THEN g.avg_yoy_pct * 0.19
                               WHEN g.avg_yoy_pct > 0 THEN  0.01
@@ -1029,25 +951,17 @@ SELECT
                         THEN CASE WHEN g.avg_yoy_pct > 0 THEN  0.01
                                   WHEN g.avg_yoy_pct < 0 THEN -0.01
                                   ELSE 0.0 END
+                        -- Dampened rate for negative-trending keys with
+                        -- directional consistency. No GX branch needed here
+                        -- since DROP SHIP can never be GX (Fix 22).
                         WHEN g.avg_yoy_pct <= 0
                          AND g.directional_consistency >= 0.80
-                    THEN CASE
-                        -- GX negative trend: route to SIGN_ONLY (-1%) instead
-                        -- of * 0.19. GX AVG_YOY_PROMOTED WMAPE = 22.58% for
-                        -- negative keys vs NO_TREND 14.24% and SIGN_ONLY 7.46%.
-                        -- Generic price declines are non-linear and the dampened
-                        -- YOY rate still overshoots downward for GX.
-                        WHEN g.cust_prod_category = 'GX' THEN -0.01
-                        ELSE g.avg_yoy_pct * 0.19
-                    END
-                    -- Negative trends always dampened regardless of dc (non-GX).
-                    -- Generic price declines are non-linear and accelerate,
-                    -- so full undampened negative rates overshoot downward.
+                        THEN g.avg_yoy_pct * 0.19
                         ELSE 0.0
                     END
                 ELSE 0.0
             END))
-        -- ── All other segments: ±2% cap (unchanged) ───────────────────────
+        -- ── All other segments: ±2% cap ───────────────────────────────────
         ELSE GREATEST(-0.02, LEAST(0.02,
             CASE
                 WHEN g.cust_prod_category = 'GLP-1'
@@ -1090,7 +1004,6 @@ SELECT
                 WHEN g.sign_only_eligible = 1 AND g.wac_spread_ok = 1
                 THEN
                     CASE
-                        -- BX 340B step history (stays in ±2% cap; WAC confirmation required)
                         WHEN g.cust_prod_category = 'BX'
                          AND g.product_family NOT IN (
                              'HUMALOG','NOVOLOG','LANTUS','NOVOLOG FLEXPEN',
@@ -1101,34 +1014,18 @@ SELECT
                          AND g.last_step_direction = 'UP'
                          AND g.recent_wac_avg_mom_change > 0
                         THEN g.avg_step_up_pct
-                        -- BX 340B STEP_DOWN_HISTORY disabled (consistent with BX non-340B)
                         WHEN g.g5_recent_price_not_falling = 1
                          AND g.directional_consistency >= 0.80
                         THEN CASE
-                              -- Full rate when all YOY pairs agree (dc=1.0) and
-                              -- trend is meaningful and direction is positive.
-                              -- Covers XARELTO, ELIQUIS, JANUVIA etc. which have
-                              -- perfectly consistent annual increases.
-                              -- GX excluded even at dc=1.0: generic price declines
-                              -- are non-linear and accelerate unpredictably —
-                              -- full undampened negative rate overshoots downward.
-                              -- Negative trends retain 0.19x dampening for all segments.
                               WHEN ABS(g.avg_yoy_pct) > 0.03
                                AND g.directional_consistency = 1.0
                                AND g.avg_yoy_pct > 0
                                AND g.cust_prod_category != 'GX'
                               THEN g.avg_yoy_pct
-                              -- GX positive trend: route to SIGN_ONLY (±1%) instead
-                              -- of * 0.19. GX AVG_YOY_PROMOTED WMAPE = 18.82% vs
-                              -- SIGN_ONLY_025PCT = 7.46% — positive YOY trend on GX
-                              -- overshoots because latest observed price already
-                              -- incorporates recent increase. SIGN_ONLY is safer.
                               WHEN ABS(g.avg_yoy_pct) > 0.03
                                AND g.avg_yoy_pct > 0
                                AND g.cust_prod_category = 'GX'
                               THEN 0.01
-                              -- Dampened rate (0.19x) for directionally
-                              -- consistent but not perfectly uniform keys.
                               WHEN ABS(g.avg_yoy_pct) > 0.03
                               THEN g.avg_yoy_pct * 0.19
                               WHEN g.avg_yoy_pct > 0 THEN  0.01
@@ -1141,18 +1038,10 @@ SELECT
                                   ELSE 0.0 END
                         WHEN g.avg_yoy_pct <= 0
                          AND g.directional_consistency >= 0.80
-                    THEN CASE
-                        -- GX negative trend: route to SIGN_ONLY (-1%) instead
-                        -- of * 0.19. GX AVG_YOY_PROMOTED WMAPE = 22.58% for
-                        -- negative keys vs NO_TREND 14.24% and SIGN_ONLY 7.46%.
-                        -- Generic price declines are non-linear and the dampened
-                        -- YOY rate still overshoots downward for GX.
-                        WHEN g.cust_prod_category = 'GX' THEN -0.01
-                        ELSE g.avg_yoy_pct * 0.19
-                    END
-                    -- Negative trends always dampened regardless of dc (non-GX).
-                    -- Generic price declines are non-linear and accelerate,
-                    -- so full undampened negative rates overshoot downward.
+                        THEN CASE
+                            WHEN g.cust_prod_category = 'GX' THEN -0.01
+                            ELSE g.avg_yoy_pct * 0.19
+                        END
                         ELSE 0.0
                     END
                 ELSE 0.0
@@ -1166,8 +1055,16 @@ SELECT
                 WHEN COALESCE(g.step_up_count, 0) >= 2
                  AND g.last_step_direction = 'UP'
                  AND COALESCE(g.avg_yoy_pct, 0) >= 0
-                 AND COALESCE(g.directional_consistency, 0) >= 0.60    THEN 'STEP_UP_HISTORY'
-                -- STEP_DOWN_HISTORY disabled for APOLLO (WMAPE 13.17% vs AVG_YOY 2.68%)
+                 AND COALESCE(g.directional_consistency, 0) >= 0.60
+                THEN
+                    CASE
+                        WHEN g.typical_increase_month_step_up_pct IS NOT NULL
+                         AND g.typical_increase_month_step_up_pct > g.avg_step_up_pct
+                         AND g.typical_increase_month_step_up_count >= 2
+                         AND g.product_family != 'LUPRON DEPOT'
+                        THEN 'STEP_UP_HISTORY_TYPICAL_MONTH'
+                        ELSE 'STEP_UP_HISTORY'
+                    END
                 WHEN COALESCE(g.yoy_pairs_used, 0) >= 1    THEN 'AVG_YOY'
                 WHEN COALESCE(g.pf_yoy_pairs_used, 0) >= 2 THEN 'PF_AVG_YOY'
                 WHEN COALESCE(g.mfr_yoy_pairs_used, 0) >= 2 THEN 'MFR_AVG_YOY'
@@ -1183,11 +1080,6 @@ SELECT
         WHEN g.cust_prod_category = 'MPB Specialty'
         THEN
             CASE
-                -- 340B-CP/CE MPB Specialty gets REGRESSION (quarterly OLS slope)
-                -- to match forecast_start_price_source = REGRESSION_TREND label.
-                -- Without this, 340B MPB Specialty gets AVG_YOY (annual rate)
-                -- but Step 8 quarterly compounding applies, causing 2.46x compound
-                -- ratio explosions (annual rate compounded 8x quarterly).
                 WHEN g.acct_classification IN ('340B-CP','340B-CE') THEN 'REGRESSION'
                 WHEN COALESCE(g.yoy_pairs_used, 0) >= 1    THEN 'AVG_YOY'
                 WHEN COALESCE(g.pf_yoy_pairs_used, 0) >= 2 THEN 'PF_AVG_YOY'
@@ -1235,12 +1127,9 @@ SELECT
                  AND g.recent_wac_avg_mom_change > 0
                  AND COALESCE(g.avg_yoy_pct, 0) >= 0
                  AND COALESCE(g.directional_consistency, 0) >= 0.60    THEN 'STEP_UP_HISTORY'
-                -- BX STEP_DOWN_HISTORY disabled (WMAPE 16.24% vs NO_TREND 9.63%)
                 WHEN g.g5_recent_price_not_falling = 1
                  AND g.directional_consistency >= 0.80
                 THEN CASE
-                         -- GX: both positive and negative demoted to SIGN_ONLY
-                         -- AVG_YOY_PROMOTED WMAPE = 22.58% vs SIGN_ONLY 7.46% for GX
                          WHEN g.cust_prod_category = 'GX'   THEN 'SIGN_ONLY_025PCT'
                          WHEN ABS(g.avg_yoy_pct) > 0.03     THEN 'AVG_YOY_PROMOTED'
                          ELSE 'SIGN_ONLY_025PCT'
@@ -1250,7 +1139,6 @@ SELECT
                 WHEN g.avg_yoy_pct <= 0
                  AND g.directional_consistency >= 0.80
                 THEN CASE
-                    -- GX negative demoted to SIGN_ONLY (matches rate applied)
                     WHEN g.cust_prod_category = 'GX' THEN 'SIGN_ONLY_025PCT'
                     ELSE 'AVG_YOY_PROMOTED'
                 END
@@ -1275,8 +1163,6 @@ SELECT
         ELSE 'NO_TREND'
     END                                                     AS assigned_trend_method,
     -- Fix 15: trend_cap_applied diagnostic column
-    -- Indicates which outer cap bound was applied for each key.
-    -- Enables QA of cap-lifted segments without inspecting CASE logic.
     CASE
         WHEN g.cust_prod_category = 'APOLLO'                                THEN '±15%'
         WHEN g.cust_prod_category = 'MPB Specialty'                         THEN '±15%'
@@ -1301,59 +1187,58 @@ FROM capped g
 -- STEP 4 QA QUERIES
 -- =========================================================
 
--- Q1: Keys switching from NO_TREND to fallback method by tier and category
+-- Q1: Keys switching from NO_TREND to fallback method
 SELECT
     cust_prod_category,
     assigned_trend_method,
     COUNT(DISTINCT groupby_key) AS key_count
-FROM uspd_analytics_den.analytics_gold.contract_price_material_live_assumptions_v23
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_material_assumptions_v23
 WHERE assigned_trend_method IN ('PF_AVG_YOY','MFR_AVG_YOY')
 GROUP BY cust_prod_category, assigned_trend_method
 ORDER BY cust_prod_category, assigned_trend_method;
 
--- Q2: Bias check — avg expected_monthly_trend_pct pre/post fallback
--- Compare keys using fallback vs key-level AVG_YOY within same category
+-- Q2: Bias check
 SELECT
     cust_prod_category,
     assigned_trend_method,
     COUNT(DISTINCT groupby_key)                             AS key_count,
     ROUND(AVG(expected_monthly_trend_pct) * 100, 3)        AS avg_trend_pct,
     ROUND(AVG(avg_yoy_pct) * 100, 3)                       AS avg_raw_yoy_pct
-FROM uspd_analytics_den.analytics_gold.contract_price_material_live_assumptions_v23
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_material_assumptions_v23
 GROUP BY cust_prod_category, assigned_trend_method
 ORDER BY cust_prod_category, assigned_trend_method;
 
--- Q3: Confirm no key-level trend was overridden by fallback
--- Any key with yoy_pairs_used >= 2 should NOT have PF_AVG_YOY or MFR_AVG_YOY
+-- Q3: Confirm no key-level trend overridden by fallback
 SELECT COUNT(*) AS bad_rows
-FROM uspd_analytics_den.analytics_gold.contract_price_material_live_assumptions_v23
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_material_assumptions_v23
 WHERE assigned_trend_method IN ('PF_AVG_YOY','MFR_AVG_YOY')
   AND COALESCE(yoy_pairs_used, 0) >= 2;
 
--- Q4: PF/MFR avg_yoy_pct variance vs key-level for switched keys
+-- Q4: PF/MFR variance vs key-level
 SELECT
     cust_prod_category,
     assigned_trend_method,
     ROUND(STDDEV(pf_avg_yoy_pct) * 100, 3)                 AS pf_trend_stddev,
     ROUND(STDDEV(mfr_avg_yoy_pct) * 100, 3)                AS mfr_trend_stddev,
     ROUND(STDDEV(avg_yoy_pct) * 100, 3)                    AS key_trend_stddev
-FROM uspd_analytics_den.analytics_gold.contract_price_material_live_assumptions_v23
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_material_assumptions_v23
 WHERE assigned_trend_method IN ('PF_AVG_YOY','MFR_AVG_YOY','AVG_YOY')
 GROUP BY cust_prod_category, assigned_trend_method
 ORDER BY cust_prod_category;
 
--- Q5: Step history coverage — confirm only APOLLO and BX have step history
+-- Q5: Step history coverage
 SELECT
     cust_prod_category,
     assigned_trend_method,
     COUNT(DISTINCT groupby_key) AS key_count
-FROM uspd_analytics_den.analytics_gold.contract_price_material_live_assumptions_v23
-WHERE assigned_trend_method IN ('STEP_UP_HISTORY','STEP_DOWN_HISTORY')
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_material_assumptions_v23
+WHERE assigned_trend_method IN (
+    'STEP_UP_HISTORY','STEP_UP_HISTORY_TYPICAL_MONTH','STEP_DOWN_HISTORY'
+)
 GROUP BY cust_prod_category, assigned_trend_method
 ORDER BY cust_prod_category;
 
--- Q6: Step magnitude sanity — avg/p50 of expected_monthly_trend_pct
--- by step method. Expect APOLLO ~+5% up, ~-7% down; BX ~+5% up, ~-42% down.
+-- Q6: Step magnitude sanity
 SELECT
     cust_prod_category,
     assigned_trend_method,
@@ -1362,14 +1247,14 @@ SELECT
     ROUND(PERCENTILE(expected_monthly_trend_pct, 0.5) * 100, 2) AS p50_trend_pct,
     ROUND(MIN(expected_monthly_trend_pct) * 100, 2)        AS min_trend_pct,
     ROUND(MAX(expected_monthly_trend_pct) * 100, 2)        AS max_trend_pct
-FROM uspd_analytics_den.analytics_gold.contract_price_material_live_assumptions_v23
-WHERE assigned_trend_method IN ('STEP_UP_HISTORY','STEP_DOWN_HISTORY')
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_material_assumptions_v23
+WHERE assigned_trend_method IN (
+    'STEP_UP_HISTORY','STEP_UP_HISTORY_TYPICAL_MONTH','STEP_DOWN_HISTORY'
+)
 GROUP BY cust_prod_category, assigned_trend_method
 ORDER BY cust_prod_category, assigned_trend_method;
 
--- Q7: Cap lift validation — pct of keys at or near the cap boundary
--- by segment. High pct at boundary for ±15%/±10% segments confirms
--- cap was previously binding and lift was warranted.
+-- Q7: Cap lift validation
 SELECT
     trend_cap_applied,
     cust_prod_category,
@@ -1382,13 +1267,90 @@ SELECT
     SUM(CASE WHEN ABS(expected_monthly_trend_pct) >= 0.019 THEN 1 ELSE 0 END)
                                                             AS at_2pct_cap,
     ROUND(AVG(expected_monthly_trend_pct) * 100, 3)        AS avg_trend_pct
-FROM uspd_analytics_den.analytics_gold.contract_price_material_live_assumptions_v23
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_material_assumptions_v23
 GROUP BY trend_cap_applied, cust_prod_category, acct_classification
 ORDER BY trend_cap_applied, cust_prod_category, acct_classification;
 
--- Q8: Confirm acct_classification is populated (Fix 14 validation)
+-- Q8: acct_classification population check
 SELECT
     COUNT(*) AS total_rows,
     SUM(CASE WHEN acct_classification IS NULL     THEN 1 ELSE 0 END) AS null_acct_class,
     SUM(CASE WHEN acct_classification = 'UNKNOWN' THEN 1 ELSE 0 END) AS unknown_acct_class
-FROM uspd_analytics_den.analytics_gold.contract_price_material_live_assumptions_v23;
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_material_assumptions_v23;
+
+-- Q9: Fix 17+19 validation
+SELECT
+    forecast_start_price_source,
+    run_id,
+    COUNT(DISTINCT groupby_key)                             AS key_count,
+    ROUND(AVG(anchor_contract_price), 2)                    AS avg_anchor_price,
+    ROUND(AVG(forecast_start_contract_price), 2)            AS avg_forecast_start_price,
+    ROUND(AVG(forecast_start_contract_price
+              / NULLIF(anchor_contract_price, 0)), 4)       AS avg_start_to_anchor_ratio,
+    ROUND(AVG(typical_increase_month_step_up_pct) * 100, 3) AS avg_typical_month_step_up_pct,
+    ROUND(AVG(avg_step_up_pct) * 100, 3)                    AS avg_all_months_step_up_pct
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_material_assumptions_v23
+WHERE cust_prod_category = 'APOLLO'
+  AND forecast_start_price_source IN (
+      'APOLLO_PROJECTED_STEP_UP_TYPICAL_MONTH_RATE',
+      'APOLLO_PROJECTED_STEP_UP',
+      'APOLLO_POST_ANCHOR_PRICE_INCREASE_CORRECTION',
+      'APOLLO_POST_ANCHOR_PRICE_DROP_CORRECTION',
+      'APOLLO_ANCHOR_CONTRACT_PRICE'
+  )
+GROUP BY forecast_start_price_source, run_id
+ORDER BY forecast_start_price_source, run_id;
+
+-- Q10: Fix 18 validation — no single-month post-anchor corrections
+SELECT
+    forecast_start_price_source,
+    post_anchor_cp_months,
+    post_anchor_months,
+    COUNT(DISTINCT groupby_key)                             AS key_count
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_material_assumptions_v23
+WHERE forecast_start_price_source IN (
+    'POST_ANCHOR_PRICE_INCREASE_CORRECTION',
+    'POST_ANCHOR_PRICE_DROP_CORRECTION',
+    'WAC_SPREAD_COMPRESSION_AVG_RECENT_6M_WITH_WAC_ADJ',
+    'WAC_SPREAD_COMPRESSION_AVG_LATEST_6_OBS_WITH_WAC_ADJ',
+    'WAC_SPREAD_COMPRESSION_ANCHOR_WITH_WAC_ADJ'
+)
+GROUP BY forecast_start_price_source, post_anchor_cp_months, post_anchor_months
+ORDER BY forecast_start_price_source, post_anchor_cp_months, post_anchor_months;
+
+-- Q11: Fix 20 validation — pf/mfr filter impact
+-- Shows product families where filtered vs unfiltered avg diverges materially.
+-- Any family with extreme_pair_count > 0 and large divergence confirms Bug 1
+-- was active and the fix is suppressing contaminated fallback rates.
+SELECT
+    run_id,
+    pf_avg_yoy_pct                                          AS pf_avg_filtered,
+    COUNT(DISTINCT groupby_key)                             AS key_count
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_material_assumptions_v23
+WHERE assigned_trend_method IN ('PF_AVG_YOY','MFR_AVG_YOY')
+  AND ABS(pf_avg_yoy_pct) > 0.5
+GROUP BY run_id, pf_avg_yoy_pct
+ORDER BY ABS(pf_avg_yoy_pct) DESC
+LIMIT 50;
+
+-- Q12: Fix 21 validation — confirm outlier months excluded from step history.
+-- Keys where step_up_count >= 2 but ALL training months with
+-- contract_price_change_outlier_flag = 1 are now excluded from the count.
+-- After fix: step_up_count should only reflect genuine reprices.
+SELECT
+    a.cust_prod_category,
+    COUNT(DISTINCT a.groupby_key)                           AS keys_with_step_up,
+    SUM(CASE WHEN tc.outlier_months > 0 THEN 1 ELSE 0 END) AS keys_with_any_outlier_month,
+    ROUND(AVG(a.step_up_count), 2)                          AS avg_step_up_count
+FROM uspd_analytics_den.analytics_gold.contract_price_bt_material_assumptions_v23 a
+JOIN (
+    SELECT groupby_key,
+           SUM(CASE WHEN contract_price_change_outlier_flag = 1 THEN 1 ELSE 0 END)
+                                                            AS outlier_months
+    FROM uspd_analytics_den.analytics_gold.contract_price_training_clean_v23
+    GROUP BY groupby_key
+) tc ON a.groupby_key = tc.groupby_key
+WHERE a.cust_prod_category IN ('APOLLO','BX')
+  AND COALESCE(a.step_up_count, 0) >= 2
+GROUP BY a.cust_prod_category
+ORDER BY a.cust_prod_category;
