@@ -146,7 +146,7 @@ SELECT
             ra.forecast_start_contract_price * POWER(
                 1 + COALESCE(ra.resolved_monthly_trend_pct, 0),
                 LEAST(
-                    FLOOR(
+                    ROUND(
                         (fam.forecast_horizon_month_num
                          + CASE
                              WHEN ra.typical_increase_month IS NULL
