@@ -1,5 +1,13 @@
 
-WITH copa_grain AS (
+WITH
+-- ── Run selection — change run_id here to switch runs ──────────────────────
+run_config AS (
+    SELECT run_id, jump_off_month, forecast_horizon_end_dt
+    FROM uspd_analytics_den.analytics_gold.contract_price_bt_runs_v23
+    WHERE run_id = 'BT_2025_01'
+),
+
+copa_grain AS (
     SELECT
         LPAD(RIGHT(CAST(sap_cust_num AS STRING), 6), 6, '0')         AS sap_cust_num_trim,
         REGEXP_REPLACE(CAST(mtrl_num AS STRING), '^0+', '')           AS mtrl_num,
@@ -29,7 +37,8 @@ WITH copa_grain AS (
         SUM(net_cos)                                                  AS copa_net_cos,
         SUM(sls_qty_bex)                                              AS copa_sls_qty
     FROM fdp_prod.psas_fdp_usp_gold.vw_pharma_profitability_actuals_fpa
-    WHERE post_dt BETWEEN '2025-01-01' AND '2026-12-31'
+    CROSS JOIN run_config rc
+    WHERE post_dt BETWEEN rc.jump_off_month AND rc.forecast_horizon_end_dt
       AND cmpny_cd IN ('8000','8545')
       AND bus_type_cd NOT IN ('18','19','20')
       AND fpa_cust_seg_cd IN ('A','B','C','D','W','F','H')
@@ -50,38 +59,41 @@ bt_series AS (
         SUM(forecasted_contract_price * actual_sls_qty)
             / NULLIF(SUM(actual_sls_qty), 0)                           AS forecasted_contract_price
     FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v21
-    WHERE run_id = 'BT_2025_01'
+    CROSS JOIN run_config rc
+    WHERE run_id = rc.run_id
     GROUP BY 1, 2, 3, 4
 ),
 
 mb_series AS (
     SELECT
-        sap_cust_num_trim,
-        REGEXP_REPLACE(CAST(mtrl_num AS STRING), '^0+', '')            AS mtrl_num,
-        cust_segment,
-        cust_prod_category,
-        MIN(cal_month_start_dt)                                        AS first_month,
-        MAX(cal_month_start_dt)                                        AS last_month,
-        MAX(CASE WHEN cal_month_start_dt >= '2025-01-01' THEN 1 ELSE 0 END)
+        b.sap_cust_num_trim,
+        REGEXP_REPLACE(CAST(b.mtrl_num AS STRING), '^0+', '')          AS mtrl_num,
+        b.cust_segment,
+        b.cust_prod_category,
+        MIN(b.cal_month_start_dt)                                      AS first_month,
+        MAX(b.cal_month_start_dt)                                      AS last_month,
+        MAX(CASE WHEN b.cal_month_start_dt >= rc.jump_off_month THEN 1 ELSE 0 END)
                                                                        AS has_horizon_months,
-        MAX(CASE WHEN exclude_from_training_flag = 0
-                  AND cal_month_start_dt < '2025-01-01' THEN 1 ELSE 0 END)
+        MAX(CASE WHEN b.exclude_from_training_flag = 0
+                  AND b.cal_month_start_dt < rc.jump_off_month THEN 1 ELSE 0 END)
                                                                        AS has_trainable_history,
-        MAX(zombie_sale_flag)                                          AS max_zombie,
-        MAX(exclude_from_training_flag)                                AS max_excl_training
-    FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v21
-    GROUP BY 1, 2, 3, 4
+        MAX(b.zombie_sale_flag)                                        AS max_zombie,
+        MAX(b.exclude_from_training_flag)                              AS max_excl_training
+    FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v21 b
+    CROSS JOIN run_config rc
+    GROUP BY b.sap_cust_num_trim, b.mtrl_num, b.cust_segment, b.cust_prod_category
 ),
 
 eligibility AS (
     SELECT
-        sap_cust_num_trim,
-        REGEXP_REPLACE(CAST(mtrl_num AS STRING), '^0+', '')            AS mtrl_num,
-        cust_segment,
-        cust_prod_category,
-        data_coverage_flag
-    FROM uspd_analytics_den.analytics_gold.contract_price_bt_run_eligibility_v21
-    WHERE run_id = 'BT_2025_01'
+        e.sap_cust_num_trim,
+        REGEXP_REPLACE(CAST(e.mtrl_num AS STRING), '^0+', '')          AS mtrl_num,
+        e.cust_segment,
+        e.cust_prod_category,
+        e.data_coverage_flag
+    FROM uspd_analytics_den.analytics_gold.contract_price_bt_run_eligibility_v21 e
+    CROSS JOIN run_config rc
+    WHERE e.run_id = rc.run_id
 ),
 
 diagnosed AS (

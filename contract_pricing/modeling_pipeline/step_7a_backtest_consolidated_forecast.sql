@@ -28,7 +28,7 @@ latest_actuals AS (
                 PARTITION BY groupby_key
                 ORDER BY cal_month_start_dt DESC
             ) AS rn
-        FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v21
+        FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v23
         WHERE exclude_from_actuals_flag = 0
     ) x
     WHERE rn = 1
@@ -112,7 +112,7 @@ latest_actuals AS (
     -- f.latest_6_observed_months                          AS LATEST_6_OBSERVED_MONTHS,
     -- f.forecast_horizon_month_num                        AS FORECAST_HORIZON_MONTH_NUM
  
-FROM uspd_analytics_den.analytics_gold.contract_price_forecast_v21 f
+FROM uspd_analytics_den.analytics_gold.contract_price_forecast_v23 f
 LEFT JOIN latest_actuals la ON f.groupby_key = la.groupby_key
 CROSS JOIN ts
 ;

@@ -424,7 +424,10 @@ base_agg AS (
 
         SUM(CASE WHEN WAC IS NOT NULL AND SLS_QTY_BEX > 0 THEN WAC END)
             / NULLIF(SUM(CASE WHEN WAC IS NOT NULL AND SLS_QTY_BEX > 0 THEN SLS_QTY_BEX END), 0)
-                                                                        AS WAC_WEIGHTED
+                                                                        AS WAC_WEIGHTED,
+
+        SUM(CASE WHEN WAC IS NOT NULL AND SLS_QTY_BEX > 0 THEN SLS_QTY_BEX END)
+                                                                        AS TOTAL_SLS_QTY_WITH_WAC
 
     FROM base_layer
     GROUP BY
@@ -442,10 +445,11 @@ base_agg AS (
 ),
 
 src AS (
+
     SELECT
         *,
-        WAC_WEIGHTED                                                    AS WAC,
-        (TOTAL_NET_COS / NULLIF(WAC_WEIGHTED * TOTAL_SLS_QTY, 0)) - 1  AS WAC_SPREAD
+        WAC_WEIGHTED                                                                AS WAC,
+        (TOTAL_NET_COS / NULLIF(WAC_WEIGHTED * TOTAL_SLS_QTY_WITH_WAC, 0)) - 1   AS WAC_SPREAD
     FROM base_agg
     WHERE YEAR_MONTH        IS NOT NULL
       AND MTRL_NUM          IS NOT NULL
@@ -747,7 +751,7 @@ pass1_flags AS (
             -- Fix 8: COALESCE guards against NULL TOTAL_ZOMBIE_SALES on
             -- WAC-ceiling rows (SUM of 0 flags is 0, not NULL, but defensive).
             WHEN COALESCE(mr.regime_change_type, 'NONE') = 'NORMAL_REGIME_CHANGE'
-             AND WAC_SPREAD = 0
+             AND ABS(WAC_SPREAD) < 1e-9.
              AND COALESCE(n.TOTAL_ZOMBIE_SALES, 0) > 0
             THEN 1
             WHEN ACCT_CLASSIFICATION IN ('340B-CP','340B-CE')                   THEN 0

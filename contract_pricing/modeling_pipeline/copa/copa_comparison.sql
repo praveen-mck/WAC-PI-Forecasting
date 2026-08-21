@@ -1,9 +1,14 @@
 WITH
 
+-- Run to analyze — change run_id here to switch runs.
+-- All date boundaries are derived from contract_price_bt_runs_v23 (step 0).
 run_ranges AS (
-    SELECT 'BT_2025_01'          AS run_id,
-           TO_DATE('2025-01-01') AS start_dt,
-           TO_DATE('2026-12-31') AS end_dt
+    SELECT
+        run_id,
+        jump_off_month              AS start_dt,
+        forecast_horizon_end_dt     AS end_dt
+    FROM uspd_analytics_den.analytics_gold.contract_price_bt_runs_v23
+    WHERE run_id = 'BT_2025_01'
 ),
 
 copa_grain AS (
@@ -62,7 +67,8 @@ bt_series AS (
         cust_segment,
         cust_prod_category
     FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_detail_v21
-    WHERE run_id = 'BT_2025_01'
+    CROSS JOIN run_ranges rr
+    WHERE run_id = rr.run_id
 ),
 
 mb_any AS (
