@@ -14,7 +14,13 @@
 
 CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_forecast_output_monthly_v1 AS
 
-WITH latest_actuals AS (
+-- BT_2025_08 uses a one-time override timestamp (the model was locked on 2026-06-29).
+-- BT_2026_07 uses the actual run timestamp.
+WITH ts AS (
+    SELECT TO_TIMESTAMP('2026-06-29T19:05:46.782+00:00') AS override_ts
+),
+
+latest_actuals AS (
     SELECT
         groupby_key,
         wac_mom_decrease_flag           AS wac_price_decrease_flag,
@@ -40,10 +46,20 @@ WITH latest_actuals AS (
 
 SELECT
     -- Load metadata
-    CURRENT_TIMESTAMP()                                     AS LOAD_TS,
-    TO_DATE(CURRENT_TIMESTAMP())                            AS LOAD_DATE,
-    DATE_FORMAT(CURRENT_TIMESTAMP(), 'HH:mm')               AS LOAD_TIME,
-    DATE_FORMAT(CURRENT_TIMESTAMP(), 'yyyy-MM')             AS LOAD_YEAR_MONTH,
+    -- BT_2025_08: locked to 2026-06-29 (model frozen date)
+    -- BT_2026_07: stamped at actual run time
+    CASE WHEN f.run_id = 'BT_2025_08' THEN ts.override_ts
+         ELSE CURRENT_TIMESTAMP()
+    END                                                     AS LOAD_TS,
+    CASE WHEN f.run_id = 'BT_2025_08' THEN TO_DATE(ts.override_ts)
+         ELSE TO_DATE(CURRENT_TIMESTAMP())
+    END                                                     AS LOAD_DATE,
+    CASE WHEN f.run_id = 'BT_2025_08' THEN DATE_FORMAT(ts.override_ts, 'HH:mm')
+         ELSE DATE_FORMAT(CURRENT_TIMESTAMP(), 'HH:mm')
+    END                                                     AS LOAD_TIME,
+    CASE WHEN f.run_id = 'BT_2025_08' THEN DATE_FORMAT(ts.override_ts, 'yyyy-MM')
+         ELSE DATE_FORMAT(CURRENT_TIMESTAMP(), 'yyyy-MM')
+    END                                                     AS LOAD_YEAR_MONTH,
 
     -- Run identity — which jump-off this forecast came from
     f.run_id                                                AS RUN_ID,
@@ -120,6 +136,7 @@ SELECT
 
 FROM uspd_analytics_den.analytics_gold.contract_price_bt_forecasted_v23 f
 LEFT JOIN latest_actuals la ON f.groupby_key = la.groupby_key
+CROSS JOIN ts
 -- ── Run filter: add new runs here ────────────────────────────────────────────
 WHERE f.run_id IN (
     'BT_2025_08',   -- consolidated view, 5-yr horizon (Aug 2025 → Aug 2030)
