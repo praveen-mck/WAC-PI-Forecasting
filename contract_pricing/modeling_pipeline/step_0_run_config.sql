@@ -52,6 +52,30 @@ SELECT
     ADD_MONTHS(TO_DATE('2025-01-01'), 24)                 AS forecast_horizon_end_dt
 
 -- ── Add new runs below ────────────────────────────────────────────────────────
+-- july 2026 for odyssey
+UNION ALL
+SELECT
+    'BT_2026_07'                                          AS run_id,
+    TO_DATE('2026-07-01')                                 AS jump_off_month,
+    1                                                     AS lookback_years,
+    ADD_MONTHS(TO_DATE('2026-07-01'), -12)                AS history_start_dt,
+    DATE_SUB(TO_DATE('2026-07-01'), 1)                    AS history_end_dt,
+    ADD_MONTHS(TO_DATE('2026-07-01'), 24)                 AS forecast_horizon_end_dt
+-- ── Add new runs below ────────────────────────────────────────────────────────
+--consolidated view 
+
+UNION ALL
+SELECT
+    'BT_2025_08'                                          AS run_id,
+    TO_DATE('2025-08-01')                                 AS jump_off_month,
+    1                                                     AS lookback_years,
+    ADD_MONTHS(TO_DATE('2025-08-01'), -12)                AS history_start_dt,
+    DATE_SUB(TO_DATE('2025-08-01'), 1)                    AS history_end_dt,
+    ADD_MONTHS(TO_DATE('2025-08-01'), 60)                 AS forecast_horizon_end_dt
+
+
+
+-- ── Add new runs below ────────────────────────────────────────────────────────
 -- UNION ALL
 -- SELECT
 --     'BT_2025_04'                                          AS run_id,

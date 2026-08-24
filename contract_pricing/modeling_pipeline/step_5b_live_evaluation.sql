@@ -43,7 +43,12 @@ SELECT
     (SELECT MAX(cal_month_start_dt)
      FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v23
      WHERE exclude_from_training_flag = 0)              AS jump_off_month,
-    ma.acct_classification,
+    -- acct_classification: sourced from history_profile (hp), not step_4 pf_lookup (ma).
+    -- pf_lookup uses MAX() which returns UNKNOWN for keys with NULL acct_classification
+    -- in modeling_base, breaking downstream 340B-CP/CE and WAC routing.
+    -- hp.acct_classification carries the point-in-time value — same source as BT
+    -- (which uses run_eligibility → bt_series_profile → history_profile).
+    hp.acct_classification,
     ma.cust_prod_category,
     ma.product_family,
     ma.manufacturer_id,

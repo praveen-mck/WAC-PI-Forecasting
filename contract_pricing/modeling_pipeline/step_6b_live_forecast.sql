@@ -156,7 +156,7 @@ SELECT
                             ), 2)
                     ), 0)
             END
-        ) / ra.WAC - 1
+        ) / NULLIF(src.WAC, 0) - 1
         ELSE NULL
     END                                                 AS implied_forecast_wac_spread
 FROM uspd_analytics_den.analytics_gold.contract_price_live_resolved_assumptions_v23 ra

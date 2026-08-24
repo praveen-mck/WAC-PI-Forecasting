@@ -662,7 +662,7 @@ SELECT
         WHEN g.recent_6m_months >= 3
          AND g.recent_6m_avg_wac_spread IS NOT NULL
          AND g.wac_spread_ok = 1
-         AND (g.recent_6m_avg_contract_price / NULLIF(g.prior_6m_avg_contract_price, 0) >= 0.40
+         AND (g.recent_6m_avg_contract_price / NULLIF(g.prior_6m_avg_contract_price, 0) >= 0.30
               OR ABS(g.recent_6m_avg_contract_price / NULLIF(g.prior_6m_avg_contract_price, 0) - 1) <= 0.05
               OR g.prior_6m_avg_contract_price > g.recent_6m_avg_contract_price * 5)
          AND (g.cust_prod_category = 'GX'

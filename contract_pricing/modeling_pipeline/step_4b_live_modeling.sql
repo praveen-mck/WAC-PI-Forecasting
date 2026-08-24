@@ -418,6 +418,7 @@ assembled AS (
         COALESCE(pf.cust_prod_category,  'UNKNOWN')     AS cust_prod_category,
         COALESCE(pf.product_family,      'UNKNOWN')     AS product_family,
         pf.manufacturer_id,
+        jo.jump_off_month,
         la.anchor_month,
         la.anchor_contract_price,
         la.anchor_wac_spread,
@@ -454,6 +455,7 @@ assembled AS (
         sh.typical_increase_month_step_up_pct,
         sh.typical_increase_month_step_up_count
     FROM all_keys a
+    CROSS JOIN jump_off jo
     LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_last_actual_v23       la   ON a.groupby_key = la.groupby_key
     LEFT JOIN sap_coverage                                                             sc   ON a.groupby_key = sc.groupby_key
     LEFT JOIN recent_6m                                                               r6   ON a.groupby_key = r6.groupby_key
@@ -505,7 +507,7 @@ guardrails AS (
                 CASE
                     WHEN COALESCE(a.step_up_count, 0) >= 2
                      AND a.last_step_direction = 'UP'
-                     AND a.typical_increase_month = MONTH(a.anchor_month)
+                     AND a.typical_increase_month = MONTH(a.jump_off_month)
                      AND COALESCE(a.avg_yoy_pct, 0) >= 0
                      AND COALESCE(a.directional_consistency, 0) >= 0.60
                     THEN a.anchor_contract_price * (1 +
@@ -673,7 +675,7 @@ SELECT
         WHEN g.recent_6m_months >= 3
          AND g.recent_6m_avg_wac_spread IS NOT NULL
          AND g.wac_spread_ok = 1
-         AND (g.recent_6m_avg_contract_price / NULLIF(g.prior_6m_avg_contract_price, 0) >= 0.40
+         AND (g.recent_6m_avg_contract_price / NULLIF(g.prior_6m_avg_contract_price, 0) >= 0.30
               OR ABS(g.recent_6m_avg_contract_price / NULLIF(g.prior_6m_avg_contract_price, 0) - 1) <= 0.05
               OR g.prior_6m_avg_contract_price > g.recent_6m_avg_contract_price * 5)
          AND (g.cust_prod_category = 'GX'
@@ -692,7 +694,7 @@ SELECT
             CASE
                 WHEN COALESCE(g.step_up_count, 0) >= 2
                  AND g.last_step_direction = 'UP'
-                 AND g.typical_increase_month = MONTH(g.anchor_month)
+                 AND g.typical_increase_month = MONTH(g.jump_off_month)
                  AND COALESCE(g.avg_yoy_pct, 0) >= 0
                  AND COALESCE(g.directional_consistency, 0) >= 0.60
                 THEN

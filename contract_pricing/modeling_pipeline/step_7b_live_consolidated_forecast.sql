@@ -7,7 +7,7 @@
 
 CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_live_forecast_output_monthly_v1 AS
 
-latest_actuals AS (
+WITH latest_actuals AS (
     SELECT
         groupby_key,
         wac_mom_decrease_flag           AS wac_price_decrease_flag,
@@ -45,7 +45,16 @@ SELECT
     DATE_FORMAT(f.jump_off_month, 'yyyy-MM')            AS FCST_ORIGIN_YEAR_MONTH,
     f.forecast_horizon_month_num                        AS FORECAST_HORIZON_MONTH_NUM,
     f.forecast_year_month                               AS FORECAST_CAL_YEAR_MONTH,
-    -- FORECAST_FISCAL_YEAR_MONTH not available in live table; add if needed
+    -- McKesson FY starts April 1: FY = calendar year + 1 for months Apr–Dec.
+    CONCAT(
+        'FY',
+        CASE WHEN MONTH(f.forecast_month) >= 4
+             THEN YEAR(f.forecast_month) + 1
+             ELSE YEAR(f.forecast_month)
+        END,
+        '-',
+        DATE_FORMAT(f.forecast_month, 'MM')
+    )                                                   AS FORECAST_FISCAL_YEAR_MONTH,
 
     -- Product identifiers
     f.cust_prod_category                                AS SLS_CTGRY_PRC_PROD_GRP,
