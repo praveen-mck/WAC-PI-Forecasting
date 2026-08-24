@@ -7,8 +7,6 @@
 
 CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_live_forecast_output_monthly_v1 AS
 
-WITH ts AS (SELECT TO_TIMESTAMP('2026-06-29T19:05:46.782+00:00') AS override_ts),
-
 latest_actuals AS (
     SELECT
         groupby_key,
@@ -34,18 +32,18 @@ latest_actuals AS (
 )
 
 SELECT
-    -- Load metadata (one-time override)
-    ts.override_ts                                      AS LOAD_TS,
-    TO_DATE(ts.override_ts)                             AS LOAD_DATE,
-    DATE_FORMAT(ts.override_ts, 'HH:mm')               AS LOAD_TIME,
-    DATE_FORMAT(ts.override_ts, 'yyyy-MM')             AS LOAD_YEAR_MONTH,
+    -- Load metadata
+    CURRENT_TIMESTAMP()                                 AS LOAD_TS,
+    TO_DATE(CURRENT_TIMESTAMP())                        AS LOAD_DATE,
+    DATE_FORMAT(CURRENT_TIMESTAMP(), 'HH:mm')           AS LOAD_TIME,
+    DATE_FORMAT(CURRENT_TIMESTAMP(), 'yyyy-MM')         AS LOAD_YEAR_MONTH,
 
     -- Series key
     f.groupby_key,
 
     -- Forecast origin / horizon
     DATE_FORMAT(f.jump_off_month, 'yyyy-MM')            AS FCST_ORIGIN_YEAR_MONTH,
-    f.forecast_horizon_month_num                        AS FORECAST_YEAR_NUM,
+    f.forecast_horizon_month_num                        AS FORECAST_HORIZON_MONTH_NUM,
     f.forecast_year_month                               AS FORECAST_CAL_YEAR_MONTH,
     -- FORECAST_FISCAL_YEAR_MONTH not available in live table; add if needed
 
@@ -99,5 +97,4 @@ SELECT
 
 FROM uspd_analytics_den.analytics_gold.contract_price_live_forecasted_v23 f
 LEFT JOIN latest_actuals la ON f.groupby_key = la.groupby_key
-CROSS JOIN ts
 ;

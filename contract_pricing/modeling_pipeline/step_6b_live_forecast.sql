@@ -173,7 +173,7 @@ LEFT JOIN (
     GROUP BY groupby_key, cal_month_start_dt
 ) src
   ON  ra.groupby_key         = src.groupby_key
- AND  src.cal_month_start_dt = ra.anchor_month
+ AND  src.cal_month_start_dt = ra.jump_off_month
 ;
 
 
