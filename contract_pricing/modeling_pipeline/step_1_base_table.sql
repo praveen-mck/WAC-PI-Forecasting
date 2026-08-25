@@ -1,5 +1,5 @@
 -- =========================================================
--- STEP 1: CONTRACT PRICE MODELING BASE v23
+-- STEP 1: CONTRACT PRICE MODELING BASE v23 (FIXED)
 -- Changes from v20:
 --   - HYBRID_MODEL_KEY_3T removed; sap_cust_num_trim + mtrl_num
 --     is the base grain
@@ -32,22 +32,48 @@
 --     for downstream diagnostics and monitoring.
 --
 -- Bug fixes (v23 patch):
---   Fix 1 — NULL rows excluded at source in base_material_key.
---   Fix 2 — CONTRACT_TYPE removed from GROUP BY in base_agg.
---   Fix 3 — CUST_SEGMENT_CD removed from GROUP BY in base_agg.
---   Fix 4 — Full defensive MAX() demotion in base_agg.
---   Fix 5 — Negative NET_COS excluded at source.
---   Fix 6 — EXTREME_REGIME_CHANGE no longer excluded from
+--   Fix 1  — NULL rows excluded at source in base_material_key.
+--   Fix 2  — CONTRACT_TYPE removed from GROUP BY in base_agg.
+--   Fix 3  — CUST_SEGMENT_CD removed from GROUP BY in base_agg.
+--   Fix 4  — Full defensive MAX() demotion in base_agg.
+--   Fix 5  — Negative NET_COS excluded at source.
+--   Fix 6  — EXTREME_REGIME_CHANGE no longer excluded from
 --     training or actuals; flagged only via regime_change_type.
---   Fix 7 — mixed_regime_flag CTE moved from normalized to
+--   Fix 7  — mixed_regime_flag CTE moved from normalized to
 --     base_layer (pre-aggregation).
---   Fix 8 (new) — COALESCE(TOTAL_ZOMBIE_SALES, 0) added in
+--   Fix 8  — COALESCE(TOTAL_ZOMBIE_SALES, 0) added in
 --     prelim_exclude_from_training to guard against NULL
 --     TOTAL_ZOMBIE_SALES on WAC-ceiling rows.
---   Fix 9 (new) — Redundant WHERE filters (SLS_QTY_BEX > 0,
+--   Fix 9  — Redundant WHERE filters (SLS_QTY_BEX > 0,
 --     IS NOT NULL) removed from base_layer; already applied
 --     in base_material_key. Comment updated accordingly.
---   Fix 10 (new) — Duplicate comment block on base_agg removed.
+--   Fix 10 — Duplicate comment block on base_agg removed.
+--
+-- Code-review fixes applied on top of v23 patch:
+--   Fix 11 — Trailing period on numeric literal corrected:
+--     ABS(WAC_SPREAD) < 1e-9.  →  ABS(WAC_SPREAD) < 1e-9
+--     The period caused a parse error in all SQL dialects.
+--   Fix 12 — WAC_WEIGHTED numerator corrected to true
+--     quantity-weighted average:
+--     SUM(WAC)  →  SUM(WAC * SLS_QTY_BEX)
+--     Previous form summed unit prices without weighting,
+--     producing a simple average instead of a dollar-weighted
+--     WAC when multiple transaction rows exist per series-month.
+--   Fix 13 — UNIT_BILL_UOM removed entirely. The column was
+--     selected in base_layer but not needed downstream;
+--     removed from base_layer SELECT to avoid confusion.
+--   Fix 14 — Q_S1_4 remediation threshold and action note
+--     added. Previously the query validated match rate but
+--     provided no guidance when rate fell below 99%.
+--   Fix 15 — mixed_regime_flag key mismatch resolved (Option B).
+--     subset_l2_id_resolved and the volatile dimensions that drove
+--     it (CUST_SEGMENT_CD, COMMON_GRP_ID, CHAIN_ID, SUBSET_L2_ID)
+--     removed from mixed_regime_flag_raw GROUP BY and key.
+--     Resulting 6-part key covers stable dimensions only and aligns
+--     structurally with normalized. pass1_flags join updated to
+--     rebuild the 6-part key from normalized columns rather than
+--     matching on the full 7-part groupby_key. MIN() in
+--     mixed_regime_flag retains EXTREME conservatively.
 --
 -- Performance optimizations (v23 patch):
 --   Opt 1 — All WHERE filters pushed into base_material_key.
@@ -55,12 +81,17 @@
 --   Opt 3 — dim_cust_acct_curr pre-filtered in subquery.
 --   Opt 4 — MTRL_NUM_STD carried forward from base_material_key.
 --
--- Known issue (tracked):
---   mixed_regime_flag groupby_key is reconstructed from
---   base_layer dimensions pre-aggregation. In transition months
---   where CUST_SEGMENT_CD has both A and B values, the resolved
---   subset_l2_id may differ from normalized (which uses MAX()
---   post-aggregation). QA query Q_S1_4 below validates match rate.
+-- Known issue (resolved via Fix 15 — Option B):
+--   mixed_regime_flag groupby_key was reconstructed from base_layer
+--   pre-aggregation, causing mismatch with normalized in transition
+--   months where CUST_SEGMENT_CD had both A and B values (different
+--   SUBSET_L2_ID branch outcomes per segment code).
+--   Fix 15 removes subset_l2_id_resolved from the mixed_regime_flag_raw
+--   GROUP BY and key construction, producing a 6-part key over the
+--   stable dimensions only. MIN(regime_change_type) in mixed_regime_flag
+--   ensures EXTREME_REGIME_CHANGE wins conservatively across all subsets
+--   that collapse into the same groupby_key. QA query Q_S1_4 validates
+--   match rate; expect >99% after this fix.
 -- =========================================================
 
 CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_modeling_base_v23 AS
@@ -337,7 +368,6 @@ base_layer AS (
         END AS SUBSET_L2_DESC,
 
         t.NET_COS,
-        t.UNIT_BILL_UOM,
         t.SLS_QTY_BEX,
         t.WAC,
         t.NET_REVENUE
@@ -422,7 +452,12 @@ base_agg AS (
         SUM(SLS_QTY_BEX)                                                AS TOTAL_SLS_QTY,
         SUM(NET_REVENUE)                                                AS TOTAL_NET_REVENUE,
 
-        SUM(CASE WHEN WAC IS NOT NULL AND SLS_QTY_BEX > 0 THEN WAC END)
+        -- Fix 12: Numerator corrected from SUM(WAC) to SUM(WAC * SLS_QTY_BEX).
+        -- The previous form summed unit WAC prices without quantity weighting,
+        -- producing a simple average when multiple transaction rows existed per
+        -- series-month. Dividing quantity-weighted dollars by total eligible
+        -- quantity yields the true dollar-weighted average WAC.
+        SUM(CASE WHEN WAC IS NOT NULL AND SLS_QTY_BEX > 0 THEN WAC * SLS_QTY_BEX END)
             / NULLIF(SUM(CASE WHEN WAC IS NOT NULL AND SLS_QTY_BEX > 0 THEN SLS_QTY_BEX END), 0)
                                                                         AS WAC_WEIGHTED,
 
@@ -445,7 +480,6 @@ base_agg AS (
 ),
 
 src AS (
-
     SELECT
         *,
         WAC_WEIGHTED                                                                AS WAC,
@@ -508,6 +542,7 @@ l2_coverage_raw AS (
             END,
         'NA')
 ),
+
 l2_coverage AS (
     -- Deduplicate to one row per (MTRL_NUM, CUST_SEGMENT, ACCT_CLASSIFICATION,
     -- CUST_PROD_CATEGORY, subset_l2_id_resolved) — the dimensions used in the
@@ -652,21 +687,42 @@ normalized AS (
 ),
 
 /* =========================================================
-   Mixed regime flag — computed from base_layer BEFORE
-   base_agg collapses rows. See Fix 7 header note.
-   Known issue: in transition months where CUST_SEGMENT_CD
-   has both A and B values, groupby_key reconstruction here
-   may differ from normalized. Validate with Q_S1_4 below.
+   Mixed regime flag — Fix 15 (Option B): 6-part stable key
+   =========================================================
+   Root cause of prior mismatch: the 7-part key included
+   subset_l2_id_resolved, which is derived from CUST_SEGMENT_CD
+   via a branch (F/H → COMMON_GRP_ID, C/D/W → CHAIN_ID, else
+   COMMON_GRP_ID). In transition months where a customer has
+   both segment A and B rows, CUST_SEGMENT_CD varies within
+   the same base_layer GROUP BY bucket, causing subset_l2_id
+   to resolve differently here vs in normalized (which uses
+   MAX(CUST_SEGMENT_CD) post-aggregation). The resulting key
+   mismatch left some 340B series with regime_change_type='NONE'.
+
+   Fix: drop subset_l2_id_resolved (and the CUST_SEGMENT_CD,
+   COMMON_GRP_ID, CHAIN_ID, SUBSET_L2_ID columns that drove it)
+   from both the GROUP BY and the key construction. The 6 remaining
+   dimensions — sap_cust_num_trim, mtrl_num, acct_classification,
+   cust_segment, cust_prod_category, manufacturer_id — are stable
+   across all segment-code variants and match the normalized key
+   exactly for 340B series.
+
+   Trade-off: regime_change_type now covers all subset_l2 buckets
+   within a groupby_key rather than per-subset. This is safe because:
+     1. mixed_regime_flag already deduplicates to one row per
+        groupby_key via MIN(), so per-subset granularity was only
+        an input detail, not an output.
+     2. MIN() ensures EXTREME_REGIME_CHANGE wins conservatively
+        when any subset bucket qualifies.
    ========================================================= */
 mixed_regime_flag_raw AS (
-    -- Computes regime_change_type per transaction-level GROUP BY.
-    -- The GROUP BY is finer than groupby_key (includes CUST_SEGMENT_CD,
-    -- COMMON_GRP_ID, CHAIN_ID, SUBSET_L2_ID separately) because these are
-    -- needed to correctly identify zombie vs vendor rows at transaction level.
-    -- However, a single groupby_key can match multiple GROUP BY buckets when
-    -- a customer has transactions with different SUBSET_L2_ID or CUST_SEGMENT_CD
-    -- values — producing duplicate groupby_key rows with different regime_change_type.
-    -- Deduplication in mixed_regime_flag below collapses these to one row per key.
+    -- Groups at the 6-part stable key grain. CUST_SEGMENT_CD,
+    -- COMMON_GRP_ID, CHAIN_ID, and SUBSET_L2_ID are intentionally
+    -- excluded — they are the volatile dimensions that caused the
+    -- prior key reconstruction mismatch.
+    -- zombie vs vendor detection is still correct at this grain
+    -- because CONTRACT_TYPE and ZOMBIE_SALE_FLAG are row-level
+    -- attributes evaluated within the HAVING / CASE aggregations.
     SELECT
         CONCAT_WS('|',
             COALESCE(sap_cust_num_trim,                                     'NA'),
@@ -674,14 +730,7 @@ mixed_regime_flag_raw AS (
             COALESCE(ACCT_CLASSIFICATION,                                   'NA'),
             COALESCE(CUST_SEGMENT,                                          'NA'),
             COALESCE(CUST_PROD_CATEGORY,                                    'NA'),
-            COALESCE(CAST(MANUFACTURER_ID AS STRING),                       'NA'),
-            COALESCE(
-                CASE
-                    WHEN CUST_SEGMENT_CD IN ('F','H')     THEN CAST(COMMON_GRP_ID AS STRING)
-                    WHEN CUST_SEGMENT_CD IN ('C','D','W') THEN CAST(CHAIN_ID AS STRING)
-                    ELSE CAST(COMMON_GRP_ID AS STRING)
-                END,
-            'NA')
+            COALESCE(CAST(MANUFACTURER_ID AS STRING),                       'NA')
         )                                                   AS groupby_key,
         CASE
             WHEN MAX(CASE WHEN CONTRACT_TYPE = 'Non-Vendor Contract'
@@ -698,24 +747,19 @@ mixed_regime_flag_raw AS (
         REGEXP_REPLACE(CAST(MTRL_NUM AS STRING), '^0+', ''),
         ACCT_CLASSIFICATION,
         CUST_SEGMENT,
-        CUST_SEGMENT_CD,
         CUST_PROD_CATEGORY,
-        MANUFACTURER_ID,
-        COMMON_GRP_ID,
-        CHAIN_ID,
-        SUBSET_L2_ID
+        MANUFACTURER_ID
     HAVING
         SUM(CASE WHEN CONTRACT_TYPE = 'Non-Vendor Contract' THEN 1 ELSE 0 END) > 0
     AND SUM(CASE WHEN CONTRACT_TYPE = 'Vendor Contract'     THEN 1 ELSE 0 END) > 0
 ),
+
 mixed_regime_flag AS (
     -- Deduplicate to one row per groupby_key.
-    -- When a key has both NORMAL and EXTREME buckets (due to SUBSET_L2_ID or
-    -- CUST_SEGMENT_CD variation within the same key), keep EXTREME_REGIME_CHANGE
-    -- as the more conservative classification.
-    -- MAX() on the string 'NORMAL_REGIME_CHANGE' vs 'EXTREME_REGIME_CHANGE':
-    -- 'NORMAL' > 'EXTREME' alphabetically (N > E), so MAX returns NORMAL.
-    -- Use MIN() instead — MIN returns EXTREME, which is the conservative choice.
+    -- After Fix 15, each groupby_key typically maps to a single
+    -- mixed_regime_flag_raw row. The MIN() is retained defensively:
+    -- if multiple MANUFACTURER_ID values somehow share a key prefix,
+    -- EXTREME_REGIME_CHANGE wins over NORMAL_REGIME_CHANGE (E < N).
     SELECT
         groupby_key,
         MIN(regime_change_type)                             AS regime_change_type
@@ -750,8 +794,9 @@ pass1_flags AS (
         CASE
             -- Fix 8: COALESCE guards against NULL TOTAL_ZOMBIE_SALES on
             -- WAC-ceiling rows (SUM of 0 flags is 0, not NULL, but defensive).
+            -- Fix 11: Trailing period on 1e-9 removed — was a syntax error.
             WHEN COALESCE(mr.regime_change_type, 'NONE') = 'NORMAL_REGIME_CHANGE'
-             AND ABS(WAC_SPREAD) < 1e-9.
+             AND ABS(WAC_SPREAD) < 1e-9
              AND COALESCE(n.TOTAL_ZOMBIE_SALES, 0) > 0
             THEN 1
             WHEN ACCT_CLASSIFICATION IN ('340B-CP','340B-CE')                   THEN 0
@@ -767,7 +812,19 @@ pass1_flags AS (
         END AS prelim_exclude_from_training
 
     FROM normalized n
-    LEFT JOIN mixed_regime_flag mr ON n.groupby_key = mr.groupby_key
+    LEFT JOIN mixed_regime_flag mr
+        -- mixed_regime_flag uses a 6-part key (Fix 15); normalized groupby_key
+        -- is 7-part (appends subset_l2_id_resolved as the 7th segment).
+        -- Join on a rebuilt 6-part key from normalized's stable dimensions
+        -- to guarantee alignment without relying on string truncation.
+        ON  CONCAT_WS('|',
+                COALESCE(n.sap_cust_num_trim,                   'NA'),
+                COALESCE(n.MTRL_NUM,                            'NA'),
+                COALESCE(n.ACCT_CLASSIFICATION,                 'NA'),
+                COALESCE(n.CUST_SEGMENT,                        'NA'),
+                COALESCE(n.CUST_PROD_CATEGORY,                  'NA'),
+                COALESCE(CAST(n.MANUFACTURER_ID AS STRING),     'NA')
+            ) = mr.groupby_key
 ),
 
 series_stats AS (
@@ -949,9 +1006,19 @@ FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v23
 GROUP BY regime_change_type
 ORDER BY key_count DESC;
 
--- Q_S1_4: mixed_regime_flag join match rate (known issue validation)
--- Checks what % of 340B keys in normalized matched a mixed_regime_flag row.
--- Expect >99% match. Low match rate indicates groupby_key mismatch.
+-- Q_S1_4: mixed_regime_flag join match rate
+-- Fix 15 (Option B) should eliminate the structural mismatch that
+-- previously caused sub-99% rates. After Fix 15, the 6-part key in
+-- mixed_regime_flag_raw is structurally identical to the first 6
+-- pipe-delimited components of groupby_key in normalized, so join
+-- failures indicate a new data issue rather than a key construction gap.
+-- Expect 100% match for 340B series that have both vendor and non-vendor
+-- rows (mixed_regime_flag only covers those). Series with only one
+-- contract type correctly return regime_change_type='NONE'.
+--   If match_pct >= 99%  → healthy; monitor each refresh.
+--   If match_pct  < 99%  → run Q_S1_4b; a new data or pipeline issue
+--                           has introduced a key mismatch. Investigate
+--                           before promoting results downstream.
 SELECT
     COUNT(DISTINCT CASE WHEN regime_change_type != 'NONE' THEN groupby_key END)
         AS matched_regime_keys,
@@ -965,6 +1032,17 @@ SELECT
     ) AS match_pct
 FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v23
 WHERE ACCT_CLASSIFICATION IN ('340B-CP','340B-CE');
+
+-- Q_S1_4b: Inspect unmatched 340B keys (run when Q_S1_4 match_pct < 99%)
+-- Returns keys present in the final table as 340B but with no regime flag.
+-- Cross-reference against mixed_regime_flag_raw to diagnose reconstruction mismatch.
+SELECT groupby_key, COUNT(*) AS month_count
+FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v23
+WHERE ACCT_CLASSIFICATION IN ('340B-CP','340B-CE')
+  AND regime_change_type = 'NONE'
+GROUP BY groupby_key
+ORDER BY month_count DESC
+LIMIT 100;
 
 -- Q_S1_5: Training exclusion breakdown
 SELECT
