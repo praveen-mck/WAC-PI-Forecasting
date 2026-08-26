@@ -1345,4 +1345,4 @@ ORDER BY cust_prod_category;
 SELECT COUNT(*) AS bad_rows
 FROM uspd_analytics_den.analytics_gold.contract_price_material_live_assumptions_v23
 WHERE anchor_contract_price IS NULL
-  AND sign_only_eligible = 1; 
+  AND sign_only_eligible = 1;

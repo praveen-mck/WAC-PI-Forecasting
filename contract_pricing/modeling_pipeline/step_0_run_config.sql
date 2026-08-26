@@ -84,4 +84,4 @@ SELECT
 --     ADD_MONTHS(TO_DATE('2025-04-01'), -12)                AS history_start_dt,
 --     DATE_SUB(TO_DATE('2025-04-01'), 1)                    AS history_end_dt,
 --     ADD_MONTHS(TO_DATE('2025-04-01'), 24)                 AS forecast_horizon_end_dt
-; 
+;

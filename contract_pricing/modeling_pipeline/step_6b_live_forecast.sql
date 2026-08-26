@@ -254,4 +254,4 @@ SELECT
 FROM uspd_analytics_den.analytics_gold.contract_price_live_resolved_assumptions_v23
 GROUP BY cust_prod_category, forecast_start_price_source
 HAVING SUM(forecast_start_price_capped_flag) > 0
-ORDER BY capped_count DESC; 
+ORDER BY capped_count DESC;

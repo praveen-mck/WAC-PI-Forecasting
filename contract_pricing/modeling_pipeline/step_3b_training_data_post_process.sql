@@ -63,5 +63,5 @@ SELECT
     latest_6_observed_months,
     latest_6_observed_avg_contract_price,
     latest_6_observed_avg_wac_spread
-FROM latest_6;  
+FROM latest_6;
 

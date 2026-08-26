@@ -1059,4 +1059,4 @@ ORDER BY 1,2,3,4;
 -- no rows where zombie_sale_flag=1 and TOTAL_ZOMBIE_SALES is NULL
 SELECT COUNT(*) AS bad_rows
 FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v23
-WHERE zombie_sale_flag = 1 AND TOTAL_ZOMBIE_SALES IS NULL; 
+WHERE zombie_sale_flag = 1 AND TOTAL_ZOMBIE_SALES IS NULL;

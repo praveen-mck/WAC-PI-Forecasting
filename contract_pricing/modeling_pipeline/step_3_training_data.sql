@@ -200,4 +200,4 @@ FROM uspd_analytics_den.analytics_gold.contract_price_training_clean_v23
 WHERE cust_prod_category = 'GX'
   AND prev_month_contract_price IS NOT NULL
 GROUP BY sap_months
-ORDER BY sap_months; 
+ORDER BY sap_months;

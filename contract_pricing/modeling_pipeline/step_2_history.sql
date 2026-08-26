@@ -198,4 +198,4 @@ SELECT
     SUM(CASE WHEN groupby_key IS NULL THEN 1 ELSE 0 END) AS null_groupby_key,
     SUM(CASE WHEN brand_name IS NULL  THEN 1 ELSE 0 END) AS null_brand_name,
     SUM(CASE WHEN top_100_brand_flag = 1 THEN 1 ELSE 0 END) AS top_100_brand_keys
-FROM uspd_analytics_den.analytics_gold.contract_price_history_profile_v23; 
+FROM uspd_analytics_den.analytics_gold.contract_price_history_profile_v23;
