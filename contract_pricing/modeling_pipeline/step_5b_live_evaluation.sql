@@ -117,5 +117,4 @@ LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_last_actual_v23 la
   ON ma.groupby_key = la.groupby_key
 LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_history_profile_v23 hp
   ON ma.groupby_key = hp.groupby_key
-WHERE la.anchor_contract_price IS NOT NULL
-;
+WHERE la.anchor_contract_price IS NOT NULL;

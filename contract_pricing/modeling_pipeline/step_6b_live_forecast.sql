@@ -1,7 +1,7 @@
 
 
 -- =====================================================================
--- STEP 7 (LIVE): FUTURE FORECAST MONTHS
+-- STEP 6 (LIVE): FUTURE FORECAST MONTHS
 -- Generates one row per groupby_key + forecast_horizon_month_num
 -- for 60 months from jump_off_month.
 -- Uses a sequence generator instead of joining to actual months
@@ -254,4 +254,4 @@ SELECT
 FROM uspd_analytics_den.analytics_gold.contract_price_live_resolved_assumptions_v23
 GROUP BY cust_prod_category, forecast_start_price_source
 HAVING SUM(forecast_start_price_capped_flag) > 0
-ORDER BY capped_count DESC;
+ORDER BY capped_count DESC; 

@@ -1,7 +1,7 @@
 
 
 -- =====================================================================
--- STEP 7: FUTURE ACTUAL MONTHS
+-- STEP 6: FUTURE ACTUAL MONTHS
 -- Fix A: modeling base join pre-aggregated to DISTINCT
 --        groupby_key + cal_month_start_dt before joining.
 -- Fix C2: months_between → DATEDIFF(MONTH) for forecast_horizon_month_num.
@@ -262,4 +262,4 @@ SELECT
                                                             AS explosion_rate_pct
 FROM uspd_analytics_den.analytics_gold.contract_price_bt_eval_summary_v23
 GROUP BY cust_prod_category, trend_cap_applied
-ORDER BY total_explosions DESC;
+ORDER BY total_explosions DESC;  

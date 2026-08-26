@@ -242,4 +242,4 @@ SELECT
 FROM ranked_obs
 WHERE obs_rn <= 6
 GROUP BY run_id, groupby_key
-;
+;  

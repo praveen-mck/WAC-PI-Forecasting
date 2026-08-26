@@ -106,4 +106,4 @@ SELECT
 
 FROM uspd_analytics_den.analytics_gold.contract_price_live_forecasted_v23 f
 LEFT JOIN latest_actuals la ON f.groupby_key = la.groupby_key
-;
+; 
