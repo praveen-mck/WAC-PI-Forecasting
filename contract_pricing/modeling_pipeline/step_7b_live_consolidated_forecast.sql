@@ -1,8 +1,14 @@
 -- =========================================================
 -- STEP 7b (LIVE): FORECAST OUTPUT FORMATTED v1
 -- Final consumption schema with load metadata and
--- most recent actuals flags joined from base table
--- Live version uses contract_price_live_forecasted_v23
+-- most recent actuals flags joined from base table.
+-- Live version uses contract_price_live_forecasted_v23.
+--
+-- Fix: FORECAST_YEAR_NUM corrected from
+--      FLOOR(MONTHS_BETWEEN(...)/12) + 12  →  YEAR(f.forecast_month).
+--      Prior formula always added 12 and used MONTHS_BETWEEN which
+--      can return fractional values. YEAR() is exact and matches
+--      the BT output table definition.
 -- =========================================================
 
 CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_live_forecast_output_monthly_v1 AS
@@ -45,7 +51,14 @@ SELECT
     DATE_FORMAT(f.jump_off_month, 'yyyy-MM')            AS FCST_ORIGIN_YEAR_MONTH,
     f.forecast_horizon_month_num                        AS FORECAST_HORIZON_MONTH_NUM,
     f.forecast_year_month                               AS FORECAST_CAL_YEAR_MONTH,
-    -- McKesson FY starts April 1: FY = calendar year + 1 for months Apr–Dec.
+    -- Fix: YEAR(forecast_month) replaces FLOOR(MONTHS_BETWEEN(...)/12)+12.
+    -- Prior formula always added 12 and used MONTHS_BETWEEN which
+    -- can return fractional values causing incorrect year assignment.
+    YEAR(f.forecast_month)                              AS FORECAST_YEAR_NUM,
+    -- McKesson FY starts April 1.
+    -- FY = calendar year + 1 for months Apr–Dec, calendar year for Jan–Mar.
+    -- Fiscal month: Apr=01, May=02, Jun=03, Jul=04, Aug=05, Sep=06,
+    --               Oct=07, Nov=08, Dec=09, Jan=10, Feb=11, Mar=12
     CONCAT(
         'FY',
         CASE WHEN MONTH(f.forecast_month) >= 4
@@ -53,7 +66,10 @@ SELECT
              ELSE YEAR(f.forecast_month)
         END,
         '-',
-        DATE_FORMAT(f.forecast_month, 'MM')
+        LPAD(CASE WHEN MONTH(f.forecast_month) >= 4
+                  THEN MONTH(f.forecast_month) - 3
+                  ELSE MONTH(f.forecast_month) + 9
+             END, 2, '0')
     )                                                   AS FORECAST_FISCAL_YEAR_MONTH,
 
     -- Product identifiers

@@ -1,30 +1,48 @@
-
-
 -- =====================================================================
 -- STEP 6 (LIVE): FUTURE FORECAST MONTHS
 -- Generates one row per groupby_key + forecast_horizon_month_num
 -- for 60 months from jump_off_month.
 -- Uses a sequence generator instead of joining to actual months
 -- (no actual data exists for future months).
+--
+-- Fix: sequence changed from (1,60) to (0,59) so that:
+--   forecast_horizon_month_num = pos.n + 1 starts at 1
+--   forecast_month starts at jump_off_month (month 0 offset)
+--   and ends at ADD_MONTHS(jump_off_month, 59) = month 60.
+--   Prior (1,60) skipped the jump_off month and produced month 61.
 -- =====================================================================
 CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_live_future_months_v23 AS
-WITH month_sequence AS (
-    -- Generate integers 1 through 60 for forecast horizons
-    SELECT explode(sequence(1, 60)) AS forecast_horizon_month_num
-)
 SELECT
     ra.groupby_key,
     ra.jump_off_month,
-    ms.forecast_horizon_month_num,
-    ADD_MONTHS(ra.jump_off_month, ms.forecast_horizon_month_num)
-                                                        AS forecast_month,
-    DATE_FORMAT(
-        ADD_MONTHS(ra.jump_off_month, ms.forecast_horizon_month_num),
-        'yyyy-MM'
-    )                                                   AS forecast_year_month
+    pos.n + 1                                                    AS forecast_horizon_month_num,
+    ADD_MONTHS(ra.jump_off_month, pos.n)                         AS forecast_month,
+    DATE_FORMAT(ADD_MONTHS(ra.jump_off_month, pos.n), 'yyyy-MM') AS forecast_year_month
 FROM uspd_analytics_den.analytics_gold.contract_price_live_resolved_assumptions_v23 ra
-CROSS JOIN month_sequence ms
+CROSS JOIN (
+    SELECT EXPLODE(SEQUENCE(0, 59)) AS n
+) pos
 ;
+
+
+-- =====================================================================
+-- PERF: PRE-MATERIALIZE WAC LOOKUP TABLE
+-- Shared with BT pipeline — sourced from modeling_base with no
+-- run_id dependency. Build once before Step 8 runs.
+-- Skip if contract_price_bt_wac_jumpoff_v23 was already built
+-- in the same pipeline execution.
+-- =====================================================================
+CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_bt_wac_jumpoff_v23 AS
+SELECT
+    groupby_key,
+    cal_month_start_dt,
+    MAX(WAC_WEIGHTED)      AS WAC,
+    MAX(TOTAL_NET_REVENUE) AS total_net_revenue
+FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v23
+GROUP BY groupby_key, cal_month_start_dt;
+
+OPTIMIZE uspd_analytics_den.analytics_gold.contract_price_bt_wac_jumpoff_v23
+ZORDER BY (groupby_key, cal_month_start_dt);
 
 
 -- =====================================================================
@@ -32,13 +50,21 @@ CROSS JOIN month_sequence ms
 -- Identical compounding logic to BT Step 8.
 -- No actual_contract_price — this is a pure forward forecast.
 --
--- 340B-CP/CE (non-APOLLO, non-MPB Specialty): quarterly compounding
---   ROUND(horizon/3.0, 0), cap 8 quarters = 24 months.
+-- 340B-CP/CE (non-APOLLO, non-MPB Specialty): quarterly compounding.
+--   ROUND(horizon/3.0, 0) — no cap, compounds through full 60 months.
 --   APOLLO and MPB Specialty excluded — annual trend rates would
 --   compound 8x quarterly instead of 2x annually.
 --
 -- All others: annual compounding with typical_increase_month offset.
---   FLOOR((horizon + offset)/12.0), cap 2 years.
+--   FLOOR((horizon + offset)/12.0) — no cap, compounds through
+--   full 60 months.
+--
+-- Fix: LEAST() caps removed from both compounding branches so price
+--      compounds through the full 60-month forecast horizon.
+-- Fix: WAC inline subquery replaced with pre-materialized lookup
+--      contract_price_bt_wac_jumpoff_v23 (shared with BT pipeline).
+-- Fix: implied_forecast_wac_spread outer WHEN condition corrected
+--      from ra.WAC (does not exist on ra) to src.WAC.
 -- =====================================================================
 CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_live_forecasted_v23 AS
 SELECT
@@ -93,42 +119,47 @@ SELECT
     fam.forecast_horizon_month_num,
     fam.forecast_year_month,
     -- ── Forecasted contract price ─────────────────────────────────────
+    -- No cap: both branches compound through full 60-month horizon.
     CASE
         WHEN ra.forecast_start_contract_price IS NULL THEN NULL
         -- 340B-CP / 340B-CE (non-APOLLO, non-MPB Specialty):
         -- quarterly compounding — trend rate is quarterly OLS slope.
+        -- No cap: LEAST(..., 8) removed, compounds through month 60.
         WHEN ra.acct_classification IN ('340B-CP', '340B-CE')
          AND ra.cust_prod_category NOT IN ('APOLLO', 'MPB Specialty')
         THEN GREATEST(
             ra.forecast_start_contract_price * POWER(
                 1 + COALESCE(ra.resolved_monthly_trend_pct, 0),
-                LEAST(ROUND(fam.forecast_horizon_month_num / 3.0, 0), 8)
+                ROUND(fam.forecast_horizon_month_num / 3.0, 0)
             ), 0)
         -- All others: annual compounding with typical_increase_month offset.
         -- Offset shifts compounding to fire at the correct calendar month.
+        -- No cap: LEAST(..., 2) removed, compounds through month 60.
         ELSE GREATEST(
             ra.forecast_start_contract_price * POWER(
                 1 + COALESCE(ra.resolved_monthly_trend_pct, 0),
-                LEAST(
-                    FLOOR(
-                        (fam.forecast_horizon_month_num
-                         + CASE
-                             WHEN ra.typical_increase_month IS NULL
-                             THEN 0
-                             WHEN ra.typical_increase_month > MONTH(ra.jump_off_month)
-                             THEN 12 - (ra.typical_increase_month - MONTH(ra.jump_off_month))
-                             WHEN ra.typical_increase_month = MONTH(ra.jump_off_month)
-                             THEN 0
-                             ELSE 12 - (12 - MONTH(ra.jump_off_month) + ra.typical_increase_month)
-                           END
-                        ) / 12.0
-                    ), 2)
+                FLOOR(
+                    (fam.forecast_horizon_month_num
+                     + CASE
+                         WHEN ra.typical_increase_month IS NULL
+                         THEN 0
+                         WHEN ra.typical_increase_month > MONTH(ra.jump_off_month)
+                         THEN 12 - (ra.typical_increase_month - MONTH(ra.jump_off_month))
+                         WHEN ra.typical_increase_month = MONTH(ra.jump_off_month)
+                         THEN 0
+                         ELSE 12 - (12 - MONTH(ra.jump_off_month) + ra.typical_increase_month)
+                       END
+                    ) / 12.0
+                )
             ), 0)
     END                                                 AS forecasted_contract_price,
     -- ── Implied WAC spread on forecasted price ────────────────────────
-    -- Uses jump_off_month WAC (point-in-time, not MAX across history)
+    -- Uses jump_off_month WAC (point-in-time, not MAX across history).
+    -- Fix: outer WHEN condition corrected to src.WAC (was ra.WAC,
+    --      which does not exist — WAC comes from the src join).
+    -- No cap: compounding exponents match forecasted_contract_price above.
     CASE
-        WHEN ra.WAC IS NOT NULL AND ra.WAC > 0
+        WHEN src.WAC IS NOT NULL AND src.WAC > 0
         THEN (
             CASE
                 WHEN ra.forecast_start_contract_price IS NULL THEN NULL
@@ -137,23 +168,22 @@ SELECT
                 THEN GREATEST(
                     ra.forecast_start_contract_price * POWER(
                         1 + COALESCE(ra.resolved_monthly_trend_pct, 0),
-                        LEAST(ROUND(fam.forecast_horizon_month_num / 3.0, 0), 8)
+                        ROUND(fam.forecast_horizon_month_num / 3.0, 0)
                     ), 0)
                 ELSE GREATEST(
                     ra.forecast_start_contract_price * POWER(
                         1 + COALESCE(ra.resolved_monthly_trend_pct, 0),
-                        LEAST(
-                            FLOOR(
-                                (fam.forecast_horizon_month_num
-                                 + CASE
-                                     WHEN ra.typical_increase_month IS NULL THEN 0
-                                     WHEN ra.typical_increase_month > MONTH(ra.jump_off_month)
-                                     THEN 12 - (ra.typical_increase_month - MONTH(ra.jump_off_month))
-                                     WHEN ra.typical_increase_month = MONTH(ra.jump_off_month) THEN 0
-                                     ELSE 12 - (12 - MONTH(ra.jump_off_month) + ra.typical_increase_month)
-                                   END
-                                ) / 12.0
-                            ), 2)
+                        FLOOR(
+                            (fam.forecast_horizon_month_num
+                             + CASE
+                                 WHEN ra.typical_increase_month IS NULL THEN 0
+                                 WHEN ra.typical_increase_month > MONTH(ra.jump_off_month)
+                                 THEN 12 - (ra.typical_increase_month - MONTH(ra.jump_off_month))
+                                 WHEN ra.typical_increase_month = MONTH(ra.jump_off_month) THEN 0
+                                 ELSE 12 - (12 - MONTH(ra.jump_off_month) + ra.typical_increase_month)
+                               END
+                            ) / 12.0
+                        )
                     ), 0)
             END
         ) / NULLIF(src.WAC, 0) - 1
@@ -162,16 +192,9 @@ SELECT
 FROM uspd_analytics_den.analytics_gold.contract_price_live_resolved_assumptions_v23 ra
 JOIN uspd_analytics_den.analytics_gold.contract_price_live_future_months_v23 fam
   ON ra.groupby_key = fam.groupby_key
--- Point-in-time WAC at jump_off_month (not MAX across history)
-LEFT JOIN (
-    SELECT
-        groupby_key,
-        cal_month_start_dt,
-        MAX(WAC_WEIGHTED)       AS WAC,
-        MAX(TOTAL_NET_REVENUE)  AS total_net_revenue
-    FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v23
-    GROUP BY groupby_key, cal_month_start_dt
-) src
+-- Point-in-time WAC at jump_off_month — pre-materialized lookup,
+-- shared with BT pipeline (no run_id dependency).
+LEFT JOIN uspd_analytics_den.analytics_gold.contract_price_bt_wac_jumpoff_v23 src
   ON  ra.groupby_key         = src.groupby_key
  AND  src.cal_month_start_dt = ra.jump_off_month
 ;
@@ -181,7 +204,7 @@ LEFT JOIN (
 -- QA QUERIES
 -- =====================================================================
 
--- Q1: Row count and jump_off_month — confirm single jump-off date
+-- Q1: Row count and jump_off_month — confirm single jump-off date.
 SELECT
     jump_off_month,
     COUNT(DISTINCT groupby_key)                         AS key_count,
@@ -201,7 +224,10 @@ FROM uspd_analytics_den.analytics_gold.contract_price_live_resolved_assumptions_
 GROUP BY cust_prod_category, trend_source, trend_cap_applied
 ORDER BY cust_prod_category, key_count DESC;
 
--- Q3: Forecast explosion check (compounding > 2x starting price)
+-- Q3: Forecast explosion check.
+-- Threshold raised to 3x — at 5-year uncapped horizon, 15% annual
+-- growth compounds to ~2x (1.15^5=2.01x), so 2x threshold would
+-- fire spuriously on legitimate high-trend keys.
 SELECT
     cust_prod_category,
     trend_source,
@@ -209,10 +235,10 @@ SELECT
     ROUND(AVG(forecasted_contract_price
               / NULLIF(forecast_start_contract_price, 0)), 3) AS avg_compound_ratio
 FROM uspd_analytics_den.analytics_gold.contract_price_live_forecasted_v23
-WHERE forecasted_contract_price > 2 * forecast_start_contract_price
+WHERE forecasted_contract_price > 3 * forecast_start_contract_price
 GROUP BY cust_prod_category, trend_source
 ORDER BY explosion_rows DESC;
--- Expect: 0 rows
+-- Expect: 0 rows for most segments; review any that appear
 
 -- Q4: Forecast profile at key horizons — 12, 24, 36, 60 months
 SELECT
