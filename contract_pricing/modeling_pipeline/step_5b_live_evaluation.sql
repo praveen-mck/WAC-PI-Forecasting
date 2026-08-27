@@ -6,31 +6,28 @@
      Step 2  — contract_price_history_profile_v23
      Step 3  — contract_price_training_clean_v23
      Step 4  — contract_price_material_live_assumptions_v23  ← run first
-
    Also requires live equivalents of BT lookup tables:
      contract_price_last_actual_v23       (no _bt_ prefix)
      contract_price_latest_obs_v23        (no _bt_ prefix)
-
    Key differences from BT pipeline:
      No run_id — one row per groupby_key
      No point-in-time caps — uses full history
-     jump_off_month = MAX(cal_month_start_dt) in modeling_base
+     jump_off_month = MAX(cal_month_start_dt) WHERE exclude_from_actuals_flag = 0
+                      (last completed business month, not current incomplete month)
      No eval vs actuals (no actuals exist for future months)
-
    This file runs:
      Step 5b — contract_price_live_resolved_assumptions_v23
      Step 7  — contract_price_live_future_months_v23
      Step 8  — contract_price_live_forecasted_v23
    ===================================================================== */
-
-
 -- =====================================================================
 -- JUMP-OFF DATE
 -- Used across Steps 5b, 7, 8. Derived once here as a scalar subquery.
+-- Uses exclude_from_actuals_flag = 0 to identify the last completed
+-- business month. exclude_from_training_flag = 0 would include the
+-- current incomplete month (e.g. 2026-08 when run in August 2026).
 -- Override by replacing MAX(cal_month_start_dt) with DATE '2025-06-01'
 -- =====================================================================
-
-
 -- =====================================================================
 -- STEP 5b (LIVE): RESOLVED ASSUMPTIONS
 -- Joins Step 4 live output to last_actual for anchor and WAC context.
@@ -39,10 +36,13 @@
 CREATE OR REPLACE TABLE uspd_analytics_den.analytics_gold.contract_price_live_resolved_assumptions_v23 AS
 SELECT
     ma.groupby_key,
-    -- Jump-off month: latest available month in modeling_base
+    -- Jump-off month: last completed business month in modeling_base.
+    -- Fix: exclude_from_actuals_flag = 0 replaces exclude_from_training_flag = 0.
+    -- training_flag includes the current incomplete month; actuals_flag
+    -- returns only fully completed months (e.g. 2026-07 when run in Aug 2026).
     (SELECT MAX(cal_month_start_dt)
      FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v23
-     WHERE exclude_from_training_flag = 0)              AS jump_off_month,
+     WHERE exclude_from_actuals_flag = 0)              AS jump_off_month,
     -- acct_classification: sourced from history_profile (hp), not step_4 pf_lookup (ma).
     -- pf_lookup uses MAX() which returns UNKNOWN for keys with NULL acct_classification
     -- in modeling_base, breaking downstream 340B-CP/CE and WAC routing.
@@ -71,10 +71,12 @@ SELECT
     hp.brand_wac_rank,
     hp.first_month,
     la.anchor_month,
+    -- Fix: exclude_from_actuals_flag = 0 replaces exclude_from_training_flag = 0
+    -- to match jump_off_month derivation above.
     DATEDIFF(MONTH, hp.first_month,
         (SELECT MAX(cal_month_start_dt)
          FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v23
-         WHERE exclude_from_training_flag = 0)
+         WHERE exclude_from_actuals_flag = 0)
     )                                                   AS months_since_first_asof_jumpoff,
     la.anchor_contract_price,
     la.anchor_wac_weighted,
