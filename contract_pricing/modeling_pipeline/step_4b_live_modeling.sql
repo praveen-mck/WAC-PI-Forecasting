@@ -73,7 +73,7 @@ WITH -- ── jump_off_month: latest available month in modeling_base ───
 jump_off AS (
     SELECT MAX(cal_month_start_dt) AS jump_off_month
     FROM uspd_analytics_den.analytics_gold.contract_price_modeling_base_v23
-    WHERE exclude_from_training_flag = 0
+    WHERE exclude_from_actuals_flag = 0
 ),
 -- ── all_keys: all active groupby_keys with at least 1 training month ──────
 all_keys AS (
