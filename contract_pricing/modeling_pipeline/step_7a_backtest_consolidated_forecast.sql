@@ -59,7 +59,8 @@ SELECT
 
     -- Forecast origin / horizon
     DATE_FORMAT(f.jump_off_month, 'yyyy-MM')                   AS FCST_ORIGIN_YEAR_MONTH,
-    YEAR(f.forecast_month)                                     AS FORECAST_YEAR_NUM,
+    FLOOR((f.forecast_horizon_month_num - 1) / 12) + 1
+    AS FORECAST_YEAR_NUM,
     DATE_FORMAT(f.forecast_month, 'yyyy-MM')                   AS FORECAST_CAL_YEAR_MONTH,
 -- FORECAST_FISCAL_YEAR_MONTH: McKesson FY starts April 1.
 -- FY = calendar year + 1 for months Apr–Dec, calendar year for Jan–Mar.
